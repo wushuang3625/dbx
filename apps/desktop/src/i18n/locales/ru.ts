@@ -3142,6 +3142,9 @@ export default withEnglishFallback({
     inputPlaceholder: "ГГГГ-ММ-ДД ЧЧ:мм:сс",
   },
   quickOpen: {
+    filePreview: "Предпросмотр файла",
+    previewFailed: "Не удалось показать файл. Откройте его для просмотра содержимого.",
+    previewEmpty: "Файл пуст",
     placeholder: "Поиск подключений, баз данных, таблиц, файлов SQL и других объектов...",
     emptyPlaceholder: "Начните вводить текст для поиска",
     noResults: "Ничего не найдено",
@@ -8094,6 +8097,8 @@ export default withEnglishFallback({
     deleteFolderConfirm: "Удалить {name} и всё содержимое, включая скрытые фильтром файлы? Это действие нельзя отменить.",
     folderDeleted: "Папка удалена",
     deleteFolderFailed: "Не удалось удалить папку: {message}",
+    locateActiveFile: "Найти текущий файл",
+    activeFileNotFound: "Текущий файл не найден. Проверьте, существует ли он и не скрыт ли фильтром файлов.",
     title: "SQL-файлы",
     storageHelp: "Это файлы на диске, открытые через «Открыть папку». По умолчанию отображаются файлы .sql и .ddl; фильтр можно настроить. Изменения сохраняются прямо в исходный файл.",
     openFolder: "Открыть папку",

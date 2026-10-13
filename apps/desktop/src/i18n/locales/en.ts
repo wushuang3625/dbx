@@ -3286,6 +3286,9 @@ export default {
     inputPlaceholder: "YYYY-MM-DD HH:mm:ss",
   },
   quickOpen: {
+    filePreview: "File preview",
+    previewFailed: "Unable to preview this file. Open it to view its contents.",
+    previewEmpty: "This file is empty",
     placeholder: "Search connections, databases, tables, SQL files, and other objects...",
     emptyPlaceholder: "Start typing to search",
     noResults: "No results found",
@@ -7703,6 +7706,8 @@ export default {
     deleteFolderConfirm: "Delete {name} and all its contents, including files hidden by the filter? This cannot be undone.",
     folderDeleted: "Folder deleted",
     deleteFolderFailed: "Failed to delete folder: {message}",
+    locateActiveFile: "Locate current file",
+    activeFileNotFound: "Current file not found. Check whether it exists or is hidden by the file filter.",
     title: "SQL Files",
     storageHelp: "These are files on disk opened via Open Folder. By default, .sql and .ddl files are shown; you can customize the file filter. Edits are saved straight back to the original file.",
     openFolder: "Open Folder",
