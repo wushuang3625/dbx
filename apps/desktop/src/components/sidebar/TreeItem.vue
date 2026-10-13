@@ -93,6 +93,7 @@ import { isLoginUserSchemaNode } from "@/lib/sidebar/loginUserNode";
 import { sidebarTreeContextKey } from "@/lib/sidebar/sidebarTreeContext";
 import { connectionCanConfigureSidebarVisibleDatabases } from "@/lib/sidebar/sidebarVisibleFilterMenu";
 import { supportsSidebarObjectNameFilter } from "@/lib/sidebar/sidebarObjectNameFilter";
+import { hasTreeNodeDatabaseContext } from "@/lib/sidebar/treeNodeContext";
 import { isWindows } from "@/lib/backend/platform";
 import { flattenTree } from "@/composables/useFlatTree";
 import { productionContextForDatabase } from "@/lib/database/productionSafety";
@@ -228,10 +229,40 @@ const activeNode = shallowRef<TreeNode>(props.node);
 
 const isDisabledTrigger = computed(() => activeNode.value.type === "trigger" && (activeNode.value.meta as TriggerInfo | undefined)?.enabled === false);
 
+// Marked rows answer "which environment am I looking at" for the connection and
+// database that carry the mark, plus the objects below them: a long tree scrolls
+// the boundary row out of sight, and that is exactly when the marker is needed.
+// Grouping rows (group-*), detail rows (column, index, …) and chrome rows stay
+// unmarked so the badge keeps pointing at write targets.
+const PRODUCTION_BADGE_NODE_TYPES: ReadonlySet<TreeNode["type"]> = new Set([
+  "connection",
+  "database",
+  "redis-db",
+  "mongo-db",
+  "table",
+  "table-vgroup",
+  "view",
+  "materialized_view",
+  "procedure",
+  "function",
+  "sequence",
+  "synonym",
+  "type",
+  "package",
+  "job",
+  "extension",
+  "event-trigger",
+  "oracle-db-link",
+  "mongo-collection",
+  "dynamodb-table",
+  "vector-collection",
+  "elasticsearch-index",
+]);
+
 const showProductionBadge = computed(() => {
   const connectionId = activeNode.value.connectionId;
   const context = productionContextForDatabase(connectionId ? connectionStore.getConfig(connectionId) : undefined, activeNode.value.database);
-  return context.active && ["connection", "database", "redis-db", "mongo-db"].includes(activeNode.value.type);
+  return context.active && PRODUCTION_BADGE_NODE_TYPES.has(activeNode.value.type);
 });
 
 function currentDatabaseType(): DatabaseType | undefined {
@@ -480,7 +511,7 @@ function visibleLabel(node: TreeNode): string {
 }
 
 function hasActiveObjectNameFilter(node: TreeNode): boolean {
-  if (!supportsSidebarObjectNameFilter(node) || !node.connectionId || !node.database) return false;
+  if (!supportsSidebarObjectNameFilter(node) || !node.connectionId || !hasTreeNodeDatabaseContext(node)) return false;
   const filter = connectionStore.tableNameFilterForScope({
     connectionId: node.connectionId,
     database: node.database,

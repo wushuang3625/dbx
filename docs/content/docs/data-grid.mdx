@@ -9,6 +9,8 @@ The data grid displays query results and table data. It covers both read-only an
 
 ## Browsing and Layout
 
+The view options provide independent **Hide NULL** and **Hide NULL / empty-string columns** switches. The latter hides columns whose currently loaded values are all `NULL` or `""`, including mixtures of both. It does not hide zero, `false`, whitespace, or columns based on an empty result. Both switches default to off and preserve manually hidden columns when disabled.
+
 DBX uses virtual scrolling and renders only the visible area. Common browsing operations include:
 
 - Dragging column edges to resize, or double-clicking to fit content
@@ -32,6 +34,8 @@ Column widths, order, frozen state, and several display preferences can persist 
 | Current-page sort | Client page | Temporary comparison of loaded rows without changing the query |
 
 The `WHERE` and `ORDER BY` inputs support long expressions, collapse/expand behavior, and metadata-based condition suggestions. The default sort used when opening tables can be configured in settings.
+
+Click the sort button beside a column header to sort the current page, cycling through ascending, descending, and clear. Hold `Alt` while clicking to add, change, or remove a sort column while preserving the other conditions and their priority. When multiple columns are sorted, numbers beside the arrows show their priority. Clicking without `Alt` switches to sorting only that column. This works in both normal and transposed views. The adjacent dropdown menu still offers database sorting.
 
 <Callout type="info">For large tables, prefer database-side `WHERE` and `ORDER BY`. Client search, value filters, and current-page sorting do not reduce the amount of data returned by the database.</Callout>
 

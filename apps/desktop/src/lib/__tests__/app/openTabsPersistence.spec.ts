@@ -21,10 +21,38 @@ function roundTrip(tabs: QueryTab[]) {
 }
 
 describe("openTabsPersistence originalSql round-trip", () => {
+  it("preserves multi-column local sort priority across a round-trip", () => {
+    const columns = [
+      { column: "name", columnIndex: 0, direction: "asc" as const },
+      { column: "score", columnIndex: 1, direction: "desc" as const },
+    ];
+    const [restored] = roundTrip([queryTab({ resultSortColumn: "name", resultSortColumnIndex: 0, resultSortDirection: "asc", resultSortMode: "local", resultSortColumns: columns })]);
+    expect(restored.resultSortColumns).toEqual(columns);
+    expect(restored.resultSortMode).toBe("local");
+  });
+
   it("preserves per-tab output view state across a round-trip", () => {
     const [restored] = roundTrip([queryTab({ uiState: { activeOutputView: "chart", redisResultViewMode: "console", resultPaneOpen: false } })]);
 
     expect(restored.uiState).toEqual({ activeOutputView: "chart", redisResultViewMode: "console", resultPaneOpen: false });
+  });
+
+  it("preserves a custom title suffix across a data tab round-trip", () => {
+    const [restored] = roundTrip([queryTab({ mode: "data", titleSuffix: "pending" })]);
+
+    expect(restored.titleSuffix).toBe("pending");
+  });
+
+  it.each(["redis", "mongo", "plugin-workbench", "objects"] as const)("preserves a custom title suffix across a %s tab round-trip", (mode) => {
+    const [restored] = roundTrip([queryTab({ mode, titleSuffix: "待办" })]);
+
+    expect(restored.titleSuffix).toBe("待办");
+  });
+
+  it("does not persist an empty title suffix", () => {
+    const [saved] = serializeOpenTabs([queryTab({ mode: "data", titleSuffix: "  " })]);
+
+    expect(saved).not.toHaveProperty("titleSuffix");
   });
 
   it("preserves the structured sort field across a data tab round-trip", () => {

@@ -114,6 +114,8 @@ const BLACK_APP_ICON: tauri::image::Image<'_> = tauri::include_image!("icons/ico
 const MACOS_DEFAULT_APP_ICON: &[u8] = include_bytes!("../icons/icon.icns");
 #[cfg(target_os = "macos")]
 const MACOS_DARK_APP_ICON: &[u8] = include_bytes!("../icons/icon-macos-dark.icns");
+#[cfg(target_os = "macos")]
+static MACOS_APP_APPEARANCE_DARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub(crate) fn apply_debug_log_level(debug_logging_enabled: bool) {
     log::set_max_level(if debug_logging_enabled { log::LevelFilter::Debug } else { log::LevelFilter::Off });
@@ -175,16 +177,24 @@ pub(crate) fn linux_compositing_available() -> bool {
     gtk::gdk::Screen::default().is_some_and(|screen| screen.is_composited())
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn should_enable_linux_floating_frame(compositing: bool, opt_in: Option<&std::ffi::OsStr>) -> bool {
+    compositing && opt_in == Some(std::ffi::OsStr::new("1"))
+}
+
 /// The Linux config declares the main window with `create: false` so its transparency can
-/// depend on the compositor, which is only known at runtime.
+/// be explicitly opted into at runtime when a compositor is available.
 #[cfg(target_os = "linux")]
 fn create_linux_main_window(app: &tauri::App) -> tauri::Result<()> {
     let Some(config) = app.config().app.windows.iter().find(|window| window.label == "main").cloned() else {
         return Ok(());
     };
     let compositing = linux_compositing_available();
-    let mut builder = tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?.transparent(compositing);
-    if compositing {
+    let opt_in = std::env::var_os("DBX_LINUX_FLOATING_FRAME");
+    let floating_frame = should_enable_linux_floating_frame(compositing, opt_in.as_deref());
+    log::info!("[WINDOW] Linux main window compositing={compositing}; floating_frame={floating_frame}");
+    let mut builder = tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?.transparent(floating_frame);
+    if floating_frame {
         // Read by index.html before first paint to draw the rounded, shadowed frame.
         builder = builder.initialization_script("window.__DBX_LINUX_FLOATING__ = true;");
     }
@@ -944,10 +954,14 @@ fn setup_desktop_tray<R: tauri::Runtime, M: Manager<R>>(
 }
 
 #[cfg(target_os = "macos")]
-fn apply_macos_app_icon_theme(app: &tauri::AppHandle, icon_theme: DesktopIconTheme) -> tauri::Result<()> {
+fn apply_macos_app_icon_theme(
+    app: &tauri::AppHandle,
+    icon_theme: DesktopIconTheme,
+    persist_bundle_icon: bool,
+) -> tauri::Result<()> {
     use objc2::{AllocAnyThread, MainThreadMarker};
-    use objc2_app_kit::{NSApplication, NSImage};
-    use objc2_foundation::NSData;
+    use objc2_app_kit::{NSApplication, NSImage, NSWorkspace, NSWorkspaceIconCreationOptions};
+    use objc2_foundation::{NSBundle, NSData, NSString};
 
     let icon_bytes = match icon_theme {
         DesktopIconTheme::Default => MACOS_DEFAULT_APP_ICON,
@@ -958,9 +972,31 @@ fn apply_macos_app_icon_theme(app: &tauri::AppHandle, icon_theme: DesktopIconThe
         // app switcher reflect the selected theme immediately.
         let marker = unsafe { MainThreadMarker::new_unchecked() };
         let application = NSApplication::sharedApplication(marker);
+        let workspace = NSWorkspace::sharedWorkspace();
+        let app_bundle_path = NSBundle::mainBundle().bundlePath();
         let data = NSData::with_bytes(icon_bytes);
         if let Some(icon) = NSImage::initWithData(NSImage::alloc(), &data) {
             unsafe { application.setApplicationIconImage(Some(&icon)) };
+
+            // NSApplication only changes the icon for this process lifetime.
+            // Persist the selected icon on the app bundle so Finder and the
+            // Dock keep showing it after DBX exits. A nil image removes the
+            // custom icon and restores the bundle's packaged default.
+            if persist_bundle_icon {
+                let persistent_icon = match icon_theme {
+                    DesktopIconTheme::Default => None,
+                    DesktopIconTheme::Black => Some(&*icon),
+                };
+                if app_bundle_path.hasSuffix(&NSString::from_str(".app"))
+                    && !workspace.setIcon_forFile_options(
+                        persistent_icon,
+                        &app_bundle_path,
+                        NSWorkspaceIconCreationOptions::empty(),
+                    )
+                {
+                    log::warn!("Failed to persist the selected macOS app icon; the app bundle may not be writable");
+                }
+            }
         } else {
             log::warn!("Failed to decode the selected macOS application icon");
         }
@@ -982,10 +1018,10 @@ fn apply_macos_development_dock_badge(app: &tauri::AppHandle) -> tauri::Result<(
     })
 }
 
-fn apply_desktop_icon_theme(app: &tauri::AppHandle, icon_theme: DesktopIconTheme) -> tauri::Result<()> {
+pub(crate) fn apply_desktop_icon_theme(app: &tauri::AppHandle, icon_theme: DesktopIconTheme) -> tauri::Result<()> {
     #[cfg(target_os = "macos")]
     {
-        apply_macos_app_icon_theme(app, icon_theme)
+        apply_macos_app_icon_theme(app, icon_theme, true)
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -1001,6 +1037,21 @@ fn apply_desktop_icon_theme(app: &tauri::AppHandle, icon_theme: DesktopIconTheme
     }
     #[cfg(not(target_os = "macos"))]
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn apply_macos_app_appearance_icon(
+    app: &tauri::AppHandle,
+    is_dark: bool,
+    selected_icon_theme: DesktopIconTheme,
+) -> tauri::Result<()> {
+    MACOS_APP_APPEARANCE_DARK.store(is_dark, std::sync::atomic::Ordering::Release);
+    let icon_theme = if is_dark || selected_icon_theme == DesktopIconTheme::Black {
+        DesktopIconTheme::Black
+    } else {
+        DesktopIconTheme::Default
+    };
+    apply_macos_app_icon_theme(app, icon_theme, true)
 }
 
 fn apply_desktop_tray_icon_theme(app: &tauri::AppHandle, _icon_theme: DesktopIconTheme) -> tauri::Result<()> {
@@ -1031,7 +1082,15 @@ fn apply_desktop_tray_icon_theme(app: &tauri::AppHandle, _icon_theme: DesktopIco
 
 pub(crate) fn apply_desktop_settings(app: &tauri::AppHandle, desktop_settings: &DesktopSettings) -> tauri::Result<()> {
     apply_debug_log_level(desktop_settings.debug_logging_enabled);
-    apply_desktop_icon_theme(app, desktop_settings.icon_theme)?;
+    #[cfg(target_os = "macos")]
+    let icon_theme = if MACOS_APP_APPEARANCE_DARK.load(std::sync::atomic::Ordering::Acquire) {
+        DesktopIconTheme::Black
+    } else {
+        desktop_settings.icon_theme
+    };
+    #[cfg(not(target_os = "macos"))]
+    let icon_theme = desktop_settings.icon_theme;
+    apply_desktop_icon_theme(app, icon_theme)?;
     if should_setup_desktop_tray(std::env::consts::OS, desktop_settings.show_tray_icon, linux_appindicator_available())
     {
         if let Some(tray) = app.tray_by_id(DESKTOP_TRAY_ID) {
@@ -1053,14 +1112,33 @@ mod tests {
         linux_drm_render_devices_from_paths, linux_nvidia_driver_from_state, linux_pci_id_from_sysfs_value,
         linux_selected_drm_render_device, linux_uses_native_wayland, linux_webkit_environment_override,
         linux_webkit_rendering_workarounds, native_window_decorations_override, should_confirm_app_exit_request,
-        should_enable_single_instance, should_fallback_to_native_quit, should_hide_window_before_exit,
-        should_hide_window_on_close, should_setup_desktop_tray, should_show_main_window_after_setup,
-        should_show_main_window_before_setup_tasks, startup_data_dir_mode, tray_menu_labels_for_locale,
-        uses_application_level_icon, LinuxDrmRenderDevice, LinuxNvidiaDriver,
+        should_enable_linux_floating_frame, should_enable_single_instance, should_fallback_to_native_quit,
+        should_hide_window_before_exit, should_hide_window_on_close, should_setup_desktop_tray,
+        should_show_main_window_after_setup, should_show_main_window_before_setup_tasks, startup_data_dir_mode,
+        tray_menu_labels_for_locale, uses_application_level_icon, LinuxDrmRenderDevice, LinuxNvidiaDriver,
     };
     use crate::data_dir::DataDirMode;
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn linux_floating_frame_is_disabled_by_default() {
+        assert!(!should_enable_linux_floating_frame(true, None));
+        assert!(!should_enable_linux_floating_frame(false, None));
+    }
+
+    #[test]
+    fn linux_floating_frame_requires_explicit_opt_in() {
+        assert!(should_enable_linux_floating_frame(true, Some(OsStr::new("1"))));
+        for value in ["", "0", "false", "true", "auto", "yes", "01"] {
+            assert!(!should_enable_linux_floating_frame(true, Some(OsStr::new(value))));
+        }
+    }
+
+    #[test]
+    fn linux_floating_frame_requires_compositing_even_when_opted_in() {
+        assert!(!should_enable_linux_floating_frame(false, Some(OsStr::new("1"))));
+    }
 
     #[test]
     fn tray_menu_labels_follow_locale() {
@@ -1632,6 +1710,11 @@ pub fn run() {
             }
             let db_path = data_dir.join("dbx.db");
 
+            // Failure logs from previous runs are kept only within their retention
+            // limits; prune once at startup so a killed process cannot leave the
+            // directory growing forever.
+            commands::sql_file::prune_desktop_sql_file_failure_logs(&data_dir);
+
             let t = Instant::now();
             append_startup_probe(format!("opening storage file=dbx.db data_dir_mode={data_dir_mode}"));
             let storage = tauri::async_runtime::block_on(async {
@@ -1649,6 +1732,9 @@ pub fn run() {
             let migration_gate = Arc::new(migration_gate::MigrationGate::new(migration_ready));
             app.manage(migration_gate.clone());
             let desktop_settings = tauri::async_runtime::block_on(storage.load_desktop_settings()).unwrap_or_default();
+            #[cfg(target_os = "macos")]
+            let app_appearance =
+                tauri::async_runtime::block_on(storage.load_app_appearance_settings()).unwrap_or_default();
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
                     .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
@@ -1736,8 +1822,9 @@ pub fn run() {
             app.manage(state.clone());
             commands::plugins::install_plugin_event_bridge(app.handle(), state.clone());
             commands::connection::install_connection_liveness_bridge(app.handle(), state.clone());
+            let app_identifier = app.config().identifier.clone();
             let backups = tauri::async_runtime::block_on(async {
-                background_backup::BackgroundBackup::new(state.clone(), data_dir.clone())
+                background_backup::BackgroundBackup::new(state.clone(), data_dir.clone(), app_identifier)
             });
             match backups {
                 Ok(backups) => {
@@ -1799,6 +1886,20 @@ pub fn run() {
             ) {
                 setup_desktop_tray(app, desktop_settings.icon_theme)?;
             }
+            #[cfg(target_os = "macos")]
+            match app_appearance.theme_mode.as_deref() {
+                Some("dark" | "soft-dark") => {
+                    apply_macos_app_appearance_icon(app.handle(), true, desktop_settings.icon_theme)?;
+                }
+                Some("light" | "soft-light") => {
+                    apply_macos_app_appearance_icon(app.handle(), false, desktop_settings.icon_theme)?;
+                }
+                // System mode is resolved by the renderer's matchMedia listener
+                // as soon as startup hydration finishes. Leave the persisted
+                // bundle icon intact until then to avoid briefly forcing light.
+                _ => {}
+            }
+            #[cfg(not(target_os = "macos"))]
             apply_desktop_icon_theme(app.handle(), desktop_settings.icon_theme)?;
             #[cfg(target_os = "macos")]
             apply_macos_development_dock_badge(app.handle())?;
@@ -1927,6 +2028,7 @@ pub fn run() {
             commands::app_settings::save_max_retries,
             commands::app_settings::load_app_appearance_settings,
             commands::app_settings::update_app_appearance_settings,
+            commands::app_settings::set_macos_app_icon_appearance,
             commands::app_settings::set_app_locale,
             commands::app_settings::complete_app_close,
             commands::app_settings::mark_frontend_ready,
@@ -2104,6 +2206,10 @@ pub fn run() {
             commands::query::cancel_query,
             commands::query::cancel_conditional_update,
             commands::query::close_query_session,
+            commands::query::read_large_value_chunk,
+            commands::query::release_large_value,
+            commands::query::download_large_value,
+            commands::query::export_snapshot_result,
             commands::query::close_client_connection_session,
             commands::query::execute_batch,
             commands::query::execute_script,
@@ -2128,6 +2234,8 @@ pub fn run() {
             commands::query::build_dropped_file_preview_sql,
             commands::query::build_table_select_sql,
             commands::query::build_database_search_sql,
+            commands::query::build_database_structure_search_sql,
+            commands::query::supports_database_structure_search,
             commands::query::build_search_result_where,
             commands::query::build_rename_object_sql,
             commands::query::build_rename_database_sql,
@@ -2187,6 +2295,9 @@ pub fn run() {
             commands::sql_file::execute_sql_file,
             commands::sql_file::execute_sql_files,
             commands::sql_file::cancel_sql_file_execution,
+            commands::sql_file::sql_file_failure_log_info,
+            commands::sql_file::export_sql_file_failure_log,
+            commands::sql_file::read_sql_file_failure_log_text,
             commands::external_sql::pending_open_sql_files,
             commands::external_sql::read_external_sql_file,
             commands::external_sql::inspect_external_sql_file,
@@ -2196,6 +2307,9 @@ pub fn run() {
             commands::list_sql_files::create_sql_file_in_folder,
             commands::list_sql_files::rename_sql_file_in_folder,
             commands::list_sql_files::delete_sql_file_in_folder,
+            commands::list_sql_files::create_sql_folder_in_folder,
+            commands::list_sql_files::rename_sql_folder_in_folder,
+            commands::list_sql_files::delete_sql_folder_in_folder,
             commands::global_search::global_search,
             commands::external_db::pending_open_db_files,
             commands::keychain::read_keychain_password,
@@ -2638,6 +2752,9 @@ pub fn run() {
             commands::database_export::record_database_export_destination,
             commands::table_export::start_table_export,
             commands::table_export::cancel_table_export,
+            commands::dameng_dump::start_dameng_dump,
+            commands::dameng_dump::cancel_dameng_dump,
+            commands::dameng_dump::resolve_dameng_dump_tool,
             commands::query_result_export::start_query_result_export,
             commands::query_result_export::create_query_result_temp_file,
             commands::query_result_export::open_query_result_temp_file,

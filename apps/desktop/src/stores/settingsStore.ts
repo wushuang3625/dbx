@@ -28,6 +28,7 @@ import { REDIS_DATABASE_DISPLAY_LIMIT_DEFAULT, REDIS_DATABASE_DISPLAY_LIMIT_MIN,
 import { normalizeSidebarHiddenTablePrefixes } from "@/lib/sidebar/sidebarTableNameDisplay";
 import { normalizeSidebarCopyTableNameSeparator } from "@/lib/sidebar/sidebarTableNameCopy";
 import type { SidebarActivation } from "@/lib/sidebar/treeNodeClick";
+import { normalizeSidebarMenuPinnedActions, normalizeSidebarMenuOrder, type SidebarMenuLayout, type SidebarMenuPinnedActions, type SidebarMenuOrder } from "@/lib/sidebar/sidebarMenuPreferences";
 import { DEFAULT_SQL_SNIPPETS } from "@/lib/sql/sqlSnippetTemplates";
 import { DEFAULT_SQL_FORMATTER_SETTINGS, normalizeSqlFormatterSettings, type SqlFormatterSettings } from "@/lib/sql/sqlFormatterConfig";
 import { canonicalSqlShortcutSql, DEFAULT_SQL_SHORTCUTS, deriveSqlShortcutDatabaseTypes, mergeDefaultSqlShortcuts, normalizeSqlShortcutDatabaseTypes, normalizeSqlShortcutKind, normalizeSqlShortcutLimit, normalizeSqlShortcutSqlByDatabaseType } from "@/lib/sql/sqlShortcutActions";
@@ -36,6 +37,7 @@ import { DEFAULT_TABLE_COLUMN_TEMPLATE_FIELDS, normalizeTableColumnTemplateField
 import { type DataTabReuseMode, DEFAULT_DATA_TAB_REUSE_MODE, normalizeDataTabReuseMode } from "@/lib/tabs/dataTabReuseMode";
 import { normalizeTableHoverLookupMode, type TableHoverLookupMode } from "@/lib/editor/hoverTableLookup";
 import { normalizeCompletionTriggerMode, type SqlCompletionTriggerMode } from "@/lib/sql/sqlCompletionTriggerPolicy";
+import { normalizeExcludedCompletionItems } from "@/lib/editor/excludedCompletions";
 import { DEFAULT_SQL_TABLE_COMPLETION_SCHEMA_QUALIFICATION, normalizeSqlTableCompletionSchemaQualification, type SqlTableCompletionSchemaQualification } from "@/lib/sql/sqlCompletionSchemaQualification";
 import { DEFAULT_CSV_QUOTE_MODE, normalizeCsvQuoteMode, type CsvQuoteMode } from "@/lib/export/csvQuoteMode";
 import { DEFAULT_CSV_NULL_MODE, normalizeCsvNullMode, type CsvNullMode } from "@/lib/export/csvNullMode";
@@ -589,6 +591,22 @@ export const AI_PROVIDER_PARTNER_PRESETS: readonly AiPartnerProviderPreset[] = [
     descriptionKey: "ai.astraflowDescription",
     badgeKey: "ai.astraflowSponsored",
   },
+  {
+    id: "packyapi",
+    label: "PackyCode",
+    iconPath: "/icons/ai/packyapi.png",
+    group: "partner",
+    provider: "openai-compatible",
+    endpoint: "https://www.packyapi.ai/v1",
+    model: "",
+    apiStyle: "completions",
+    authMethod: "bearer",
+    requiresApiKey: true,
+    websiteUrl: "https://www.packyapi.ai/register?aff=wyDA",
+    apiKeyUrl: "https://www.packyapi.ai/register?aff=wyDA",
+    descriptionKey: "ai.packyapiDescription",
+    badgeKey: "ai.packyapiSponsored",
+  },
 ];
 
 function normalizeAiProviderEndpoint(endpoint: string): string {
@@ -1001,6 +1019,12 @@ export interface EditorSettings {
    */
   oracleOciClientPath: string;
   /**
+   * Dameng client bin directory (the directory that contains dexp/dimp).
+   * Shared by every Dameng connection's native .dmp export/import; the tools
+   * ship with the DM client install and are not bundled with DBX.
+   */
+  damengClientBinDir: string;
+  /**
    * Client character set for OCI connections, injected as the NLS_LANG
    * environment variable when the OCI agent starts. Empty keeps the OCI
    * default; Chinese environments usually want AL32UTF8 (matching the
@@ -1054,6 +1078,7 @@ export interface EditorSettings {
   dataGridZebraRowBg: string;
   dataGridMultiRowTranspose: boolean;
   dataGridHideNullColumns: boolean;
+  dataGridHideEmptyColumns: boolean;
   dataGridBooleanDisplayMode: "dropdown" | "checkbox";
   numericColumnRightAlign: boolean;
   tableFontFamily: string;
@@ -1070,6 +1095,10 @@ export interface EditorSettings {
   shortcuts: ShortcutSettings;
   sqlFormatter: SqlFormatterSettings;
   sidebarActivation: SidebarActivation;
+  sidebarMenuLayout: SidebarMenuLayout;
+  sidebarMenuPinnedActions: SidebarMenuPinnedActions;
+  sidebarMenuHiddenPrimaryActions: SidebarMenuPinnedActions;
+  sidebarMenuOrder: SidebarMenuOrder;
   sidebarConnectionSortMode: ConnectionListSortMode;
   sidebarObjectDisplay: "grouped" | "simple";
   routineSourceOpenMode: "query-tab" | "dialog";
@@ -1151,6 +1180,8 @@ export interface EditorSettings {
   tableHoverLookupMode: TableHoverLookupMode;
   clickTableNavigationTarget: ClickTableNavigationTarget;
   completionTriggerMode: SqlCompletionTriggerMode;
+  /** Completion labels (case-insensitive) the user never wants suggested. */
+  excludedCompletionItems: string[];
   defaultTransactionMode: DefaultTransactionMode;
   /** Auto-commit (`Tx:A`) tabs with a MySQL-family connection: keep a
    *  transaction the user opens explicitly (`BEGIN` / `START TRANSACTION`) open
@@ -1338,6 +1369,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   showColumnHeaderTooltips: true,
   showResultSourceDatabase: true,
   oracleOciClientPath: "",
+  damengClientBinDir: "",
   oracleOciNlsLang: "",
   oracleOciTnsAdmin: "",
   resultTabNamingMode: "source",
@@ -1376,6 +1408,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   dataGridZebraRowBg: "",
   dataGridMultiRowTranspose: false,
   dataGridHideNullColumns: false,
+  dataGridHideEmptyColumns: false,
   dataGridBooleanDisplayMode: "dropdown",
   numericColumnRightAlign: true,
   tableFontFamily: DEFAULT_DATA_GRID_FONT_FAMILY,
@@ -1392,6 +1425,10 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   shortcuts: normalizeShortcutSettings(),
   sqlFormatter: normalizeSqlFormatterSettings(DEFAULT_SQL_FORMATTER_SETTINGS),
   sidebarActivation: "single",
+  sidebarMenuLayout: "grouped",
+  sidebarMenuPinnedActions: {},
+  sidebarMenuHiddenPrimaryActions: {},
+  sidebarMenuOrder: {},
   sidebarConnectionSortMode: "manual",
   sidebarObjectDisplay: "grouped",
   routineSourceOpenMode: "query-tab",
@@ -1466,6 +1503,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   tableHoverLookupMode: "fallback",
   clickTableNavigationTarget: "data",
   completionTriggerMode: "positional",
+  excludedCompletionItems: [],
   defaultTransactionMode: "auto",
   keepExplicitTransactionInAutoCommit: false,
 };
@@ -1981,6 +2019,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     oracleOciNlsLang: typeof settings.oracleOciNlsLang === "string" ? settings.oracleOciNlsLang.trim() : "",
     oracleOciTnsAdmin: typeof settings.oracleOciTnsAdmin === "string" ? settings.oracleOciTnsAdmin.trim() : "",
     oracleOciClientPath: typeof settings.oracleOciClientPath === "string" ? settings.oracleOciClientPath.trim() : "",
+    damengClientBinDir: typeof settings.damengClientBinDir === "string" ? settings.damengClientBinDir.trim() : "",
     resultTabNamingMode: normalizeResultTabNamingMode(settings.resultTabNamingMode),
     resultTabPreferComments: settings.resultTabPreferComments !== false,
     dataGridShowTransposeFieldMetadata: settings.dataGridShowTransposeFieldMetadata === true,
@@ -2017,6 +2056,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     dataGridZebraRowBg: typeof settings.dataGridZebraRowBg === "string" ? settings.dataGridZebraRowBg.trim() : DEFAULT_EDITOR_SETTINGS.dataGridZebraRowBg,
     dataGridMultiRowTranspose: settings.dataGridMultiRowTranspose === true,
     dataGridHideNullColumns: settings.dataGridHideNullColumns === true,
+    dataGridHideEmptyColumns: settings.dataGridHideEmptyColumns === true,
     dataGridBooleanDisplayMode: settings.dataGridBooleanDisplayMode === "checkbox" ? "checkbox" : "dropdown",
     numericColumnRightAlign: typeof settings.numericColumnRightAlign === "boolean" ? settings.numericColumnRightAlign : DEFAULT_EDITOR_SETTINGS.numericColumnRightAlign,
     tableFontFamily: normalizeFontFamily(settings.tableFontFamily, DEFAULT_EDITOR_SETTINGS.tableFontFamily),
@@ -2033,6 +2073,10 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     shortcuts: normalizeShortcutSettings(settings.shortcuts),
     sqlFormatter: normalizeSqlFormatterSettings(settings.sqlFormatter),
     sidebarActivation: settings.sidebarActivation === "single" || settings.sidebarActivation === "double" ? settings.sidebarActivation : DEFAULT_EDITOR_SETTINGS.sidebarActivation,
+    sidebarMenuLayout: settings.sidebarMenuLayout === "full" ? "full" : "grouped",
+    sidebarMenuPinnedActions: normalizeSidebarMenuPinnedActions(settings.sidebarMenuPinnedActions),
+    sidebarMenuHiddenPrimaryActions: normalizeSidebarMenuPinnedActions(settings.sidebarMenuHiddenPrimaryActions),
+    sidebarMenuOrder: normalizeSidebarMenuOrder(settings.sidebarMenuOrder),
     sidebarConnectionSortMode: normalizeConnectionListSortMode(settings.sidebarConnectionSortMode),
     sidebarObjectDisplay: settings.sidebarObjectDisplay === "simple" || settings.sidebarObjectDisplay === "grouped" ? settings.sidebarObjectDisplay : DEFAULT_EDITOR_SETTINGS.sidebarObjectDisplay,
     routineSourceOpenMode: settings.routineSourceOpenMode === "query-tab" || settings.routineSourceOpenMode === "dialog" ? settings.routineSourceOpenMode : DEFAULT_EDITOR_SETTINGS.routineSourceOpenMode,
@@ -2157,6 +2201,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     tableHoverLookupMode: normalizeTableHoverLookupMode(settings.tableHoverLookupMode, DEFAULT_EDITOR_SETTINGS.tableHoverLookupMode),
     clickTableNavigationTarget: normalizeClickTableNavigationTarget(settings.clickTableNavigationTarget),
     completionTriggerMode: normalizeCompletionTriggerMode(settings.completionTriggerMode),
+    excludedCompletionItems: normalizeExcludedCompletionItems(settings.excludedCompletionItems),
     defaultTransactionMode: normalizeDefaultTransactionMode(settings.defaultTransactionMode),
     keepExplicitTransactionInAutoCommit: settings.keepExplicitTransactionInAutoCommit === true,
     backgroundImage: normalizeBackgroundImageSettings(settings.backgroundImage),
@@ -2856,6 +2901,7 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.oracleOciNlsLang !== undefined) editorSettings.value.oracleOciNlsLang = partial.oracleOciNlsLang.trim();
     if (partial.oracleOciTnsAdmin !== undefined) editorSettings.value.oracleOciTnsAdmin = partial.oracleOciTnsAdmin.trim();
     if (partial.oracleOciClientPath !== undefined) editorSettings.value.oracleOciClientPath = partial.oracleOciClientPath.trim();
+    if (partial.damengClientBinDir !== undefined) editorSettings.value.damengClientBinDir = partial.damengClientBinDir.trim();
     if (partial.resultTabNamingMode !== undefined) editorSettings.value.resultTabNamingMode = normalizeResultTabNamingMode(partial.resultTabNamingMode);
     if (partial.resultTabPreferComments !== undefined) editorSettings.value.resultTabPreferComments = partial.resultTabPreferComments !== false;
     if (partial.dataGridShowTransposeFieldMetadata !== undefined) editorSettings.value.dataGridShowTransposeFieldMetadata = partial.dataGridShowTransposeFieldMetadata === true;
@@ -2898,6 +2944,7 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.dataGridZebraRowBg !== undefined) editorSettings.value.dataGridZebraRowBg = typeof partial.dataGridZebraRowBg === "string" ? partial.dataGridZebraRowBg.trim() : DEFAULT_EDITOR_SETTINGS.dataGridZebraRowBg;
     if (partial.dataGridMultiRowTranspose !== undefined) editorSettings.value.dataGridMultiRowTranspose = partial.dataGridMultiRowTranspose === true;
     if (partial.dataGridHideNullColumns !== undefined) editorSettings.value.dataGridHideNullColumns = partial.dataGridHideNullColumns === true;
+    if (partial.dataGridHideEmptyColumns !== undefined) editorSettings.value.dataGridHideEmptyColumns = partial.dataGridHideEmptyColumns === true;
     if (partial.dataGridBooleanDisplayMode !== undefined) editorSettings.value.dataGridBooleanDisplayMode = partial.dataGridBooleanDisplayMode === "dropdown" ? "dropdown" : "checkbox";
     if (partial.numericColumnRightAlign !== undefined) editorSettings.value.numericColumnRightAlign = partial.numericColumnRightAlign === true;
     if (partial.tableFontFamily !== undefined) editorSettings.value.tableFontFamily = normalizeFontFamily(partial.tableFontFamily, DEFAULT_EDITOR_SETTINGS.tableFontFamily);
@@ -2914,6 +2961,10 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.shortcuts !== undefined) editorSettings.value.shortcuts = normalizeShortcutSettings(partial.shortcuts);
     if (partial.sqlFormatter !== undefined) editorSettings.value.sqlFormatter = normalizeSqlFormatterSettings(partial.sqlFormatter);
     if (partial.sidebarActivation !== undefined) editorSettings.value.sidebarActivation = partial.sidebarActivation;
+    if (partial.sidebarMenuLayout !== undefined) editorSettings.value.sidebarMenuLayout = partial.sidebarMenuLayout === "full" ? "full" : "grouped";
+    if (partial.sidebarMenuPinnedActions !== undefined) editorSettings.value.sidebarMenuPinnedActions = normalizeSidebarMenuPinnedActions(partial.sidebarMenuPinnedActions);
+    if (partial.sidebarMenuHiddenPrimaryActions !== undefined) editorSettings.value.sidebarMenuHiddenPrimaryActions = normalizeSidebarMenuPinnedActions(partial.sidebarMenuHiddenPrimaryActions);
+    if (partial.sidebarMenuOrder !== undefined) editorSettings.value.sidebarMenuOrder = normalizeSidebarMenuOrder(partial.sidebarMenuOrder);
     if (partial.sidebarConnectionSortMode !== undefined) editorSettings.value.sidebarConnectionSortMode = normalizeConnectionListSortMode(partial.sidebarConnectionSortMode);
     if (partial.sidebarObjectDisplay !== undefined) editorSettings.value.sidebarObjectDisplay = partial.sidebarObjectDisplay;
     if (partial.routineSourceOpenMode !== undefined) editorSettings.value.routineSourceOpenMode = partial.routineSourceOpenMode;
@@ -2999,6 +3050,7 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.tableHoverLookupMode !== undefined) editorSettings.value.tableHoverLookupMode = normalizeTableHoverLookupMode(partial.tableHoverLookupMode, DEFAULT_EDITOR_SETTINGS.tableHoverLookupMode);
     if (partial.clickTableNavigationTarget !== undefined) editorSettings.value.clickTableNavigationTarget = normalizeClickTableNavigationTarget(partial.clickTableNavigationTarget);
     if (partial.completionTriggerMode !== undefined) editorSettings.value.completionTriggerMode = normalizeCompletionTriggerMode(partial.completionTriggerMode);
+    if (partial.excludedCompletionItems !== undefined) editorSettings.value.excludedCompletionItems = normalizeExcludedCompletionItems(partial.excludedCompletionItems);
     if (partial.defaultTransactionMode !== undefined) editorSettings.value.defaultTransactionMode = normalizeDefaultTransactionMode(partial.defaultTransactionMode);
     if (partial.keepExplicitTransactionInAutoCommit !== undefined) editorSettings.value.keepExplicitTransactionInAutoCommit = partial.keepExplicitTransactionInAutoCommit === true;
     if (partial.flatteningMultiLineText !== undefined) editorSettings.value.flatteningMultiLineText = partial.flatteningMultiLineText;

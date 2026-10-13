@@ -80,6 +80,7 @@ import ProductionWatermark from "@/components/common/ProductionWatermark.vue";
 import DataGridCopyFormatControl from "@/components/grid/DataGridCopyFormatControl.vue";
 import DataGridFontFamilyControl from "@/components/grid/DataGridFontFamilyControl.vue";
 import DataGridColumnWidthModeControl from "@/components/grid/DataGridColumnWidthModeControl.vue";
+import DataGridEmptyColumnsControl from "@/components/grid/DataGridEmptyColumnsControl.vue";
 import DataGridColumnLayoutPopover from "@/components/grid/DataGridColumnLayoutPopover.vue";
 import type { DataGridColumnLayoutHandle } from "@/components/grid/dataGridColumnLayoutPopover";
 import type { ColumnInfo } from "@/components/editor/ColumnInfoPanel.vue";
@@ -193,7 +194,7 @@ import { queryResultExportBaseName } from "@/lib/export/saveTextFile";
 import { applyMongoGridChangesToDocument, applyMongoGridChangesToDocumentBaseline, serializeMongoDocumentId, type MongoInputValue } from "@/lib/mongo/mongoDocumentValues";
 import { buildMongoQueryResultOperations, formatMongoQueryResultOperationPreview } from "@/lib/mongo/mongoQueryResultEditing";
 import { buildInfluxDbV1DeleteStatements, canDeleteInfluxDbV1Row, resolveInfluxDbV1DeleteTarget } from "@/lib/influxdb/influxDbV1Delete";
-import type { DataGridSortMode } from "@/lib/dataGrid/dataGridSort";
+import type { DataGridSortColumn, DataGridSortMode } from "@/lib/dataGrid/dataGridSort";
 import { isDataGridToolbarCompact, type DataGridReloadIntent, type DataGridToolbarActionCapability } from "@/lib/dataGrid/dataGridToolbar";
 import { useTabScroll } from "@/composables/useTabScroll";
 import { useToolbarOverflow } from "@/composables/useToolbarOverflow";
@@ -223,6 +224,7 @@ type DataGridHandle = DataGridColumnLayoutHandle & {
   openCellDetailSearch: () => boolean;
   nullColumnsHidden: boolean;
   allNullColumnCount: number;
+  allEmptyColumnCount: number;
   canToggleAllNullColumns: boolean;
   toggleAllNullColumns: () => void;
   defaultCopyPreference: string;
@@ -636,9 +638,9 @@ const neo4jNodeTable = useNeo4jNodeTableResult(
 const activeGridResult = computed(() => (hasNeo4jNodes.value ? neo4jNodeTable.result.value : props.activeTab.result));
 const activeGridSort = computed(() => (hasNeo4jNodes.value ? neo4jNodeTable.sort.value : undefined));
 
-function sortQueryGrid(column: string, columnIndex: number, direction: "asc" | "desc" | null, whereInput?: string, mode?: DataGridSortMode, effectiveOrderBy?: string) {
-  if (hasNeo4jNodes.value) neo4jNodeTable.setSort(column, columnIndex, direction);
-  else emit("sort", props.activeTab.id, column, columnIndex, direction, whereInput, mode, effectiveOrderBy);
+function sortQueryGrid(column: string, columnIndex: number, direction: "asc" | "desc" | null, whereInput?: string, mode?: DataGridSortMode, effectiveOrderBy?: string, columns?: DataGridSortColumn[]) {
+  if (hasNeo4jNodes.value) neo4jNodeTable.setSort(column, columnIndex, direction, columns);
+  else emit("sort", props.activeTab.id, column, columnIndex, direction, whereInput, mode, effectiveOrderBy, columns);
 }
 
 async function fetchGridResultForExport(onProgress?: (info: { rowsExported: number; totalRows: number | null }) => void, probeRowLimit = false, tabId = props.activeTab.id) {
@@ -798,6 +800,7 @@ const canShowExplainOutput = computed(() => !!props.activeTab.explainPlan || !!p
 // of only the active result's — otherwise a statement with no result set
 // silently loses its notices once a later statement owns the active result.
 const resultMessages = computed<QueryMessage[]>(() => {
+  if (props.activeTab.liveQueryMessages?.length) return props.activeTab.liveQueryMessages;
   const results = props.activeTab.results?.length ? props.activeTab.results : props.activeTab.result ? [props.activeTab.result] : [];
   return results.flatMap(queryResultMessages);
 });
@@ -1095,6 +1098,15 @@ watch(
 );
 
 watch(
+  () => props.activeTab.liveQueryMessages?.length ?? 0,
+  (count, previousCount) => {
+    if (count > 0 && !previousCount && props.activeTab.isExecuting && !props.editorOnly && !hasTabularResult.value && (props.activeOutputView === "result" || props.activeOutputView === "summary")) {
+      emit("update:activeOutputView", props.activeTab.id, "messages");
+    }
+  },
+);
+
+watch(
   () => [props.activeTab.id, props.activeTab.result, props.activeTab.results, props.activeTab.isExecuting, props.activeOutputView] as const,
   () => {
     // The output view belongs to the shared result surface. An editor-only
@@ -1309,6 +1321,7 @@ async function loadActiveDdlViewer(force: boolean) {
         connectionId: tab.connectionId,
         database: tab.database,
         schema: ddlViewer.schema || tab.database,
+        queryTimeoutSecs: (connectionStore.getConfig(tab.connectionId) ?? props.activeConnection)?.query_timeout_secs,
         tableName: ddlViewer.tableName,
         objectType: ddlViewer.objectType,
         catalog: tab.catalog,
@@ -1629,12 +1642,24 @@ async function closeCurrentQueryResult() {
 }
 
 async function selectResultRun(runId: string) {
+  if (runId !== props.activeTab.activeResultRunId) dispatchBeforeResultTabSwitch();
   if (!(await queryStore.setActiveResultRun(props.activeTab.id, runId))) {
     toast(t("tabs.missingResultRun"), 4000);
     return false;
   }
   emit("update:activeOutputView", props.activeTab.id, "result");
   return true;
+}
+
+/**
+ * Result-set tabs share one query tab, but switching them still replaces the
+ * mounted DataGrid instance. Give the grid the same pre-switch boundary used
+ * by editor tabs so it snapshots its viewport and selection before the store
+ * changes the active result.
+ */
+function dispatchBeforeResultTabSwitch() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("dbx:before-tab-switch", { detail: { tabId: props.activeTab.id, fromTabId: props.activeTab.id } }));
 }
 
 /**
@@ -1676,6 +1701,7 @@ function toggleResultAutoSave() {
 }
 
 function selectResultItem(item: (typeof visibleResultItems.value)[number]) {
+  if (item.index !== (props.activeTab.activeResultIndex ?? 0)) dispatchBeforeResultTabSwitch();
   queryStore.setActiveResultIndex(props.activeTab.id, item.index);
   emit("update:activeOutputView", props.activeTab.id, "result");
   const range = resultSourceRange(props.activeTab.sql, item.result, item.index, activeEffectiveDatabaseType.value, activeSqlStatementParameterOptions.value) ?? null;
@@ -1987,8 +2013,11 @@ defineExpose({
               :format-dialect="activeSqlFormatDialect"
               :format-request-id="formatSqlRequest?.tabId === activeTab.id ? formatSqlRequest.id : undefined"
               :compress-request-id="compressSqlRequest?.tabId === activeTab.id ? compressSqlRequest.id : undefined"
+              :keyword-case-request-id="keywordCaseRequest?.tabId === activeTab.id ? keywordCaseRequest.id : undefined"
+              :keyword-case-request-mode="keywordCaseRequest?.tabId === activeTab.id ? keywordCaseRequest.mode : undefined"
               :execution-error="activeQueryError"
               :execution-error-sql="activeTab.lastExecutedSql"
+              :execution-error-result="activeQueryError ? activeTab.result : undefined"
               :result-columns="activeTab.result?.columns"
               :result-source-statement="activeTab.result?.sourceStatement"
               :result-source-from="activeTab.result?.sourceFrom"
@@ -2080,6 +2109,7 @@ defineExpose({
                           class="group/result-run inline-flex h-7 shrink-0 select-none items-center overflow-hidden rounded-md border transition-colors"
                           :class="run.active ? 'border-border bg-background text-foreground shadow-sm' : 'border-transparent text-muted-foreground hover:border-border/70 hover:bg-background/70 hover:text-foreground'"
                           @contextmenu="onContextMenu"
+                          @mousedown.middle.stop.prevent="removeResultRun(run.id)"
                         >
                           <button
                             type="button"
@@ -2091,6 +2121,7 @@ defineExpose({
                             class="flex h-full select-none items-center gap-1 whitespace-nowrap pl-2.5 pr-1 text-xs font-medium outline-none focus-visible:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50"
                             @click="selectResultRunFromTab(run.id)"
                             @keydown="onResultRunTabKeydown($event, runIndex)"
+                            @mousedown.middle.stop.prevent="removeResultRun(run.id)"
                           >
                             <Pin v-if="run.pinned" class="h-3 w-3 shrink-0 fill-current text-primary" />
                             {{ run.title || run.sourceLabel || resultRunFallbackLabel(run.sequence) }}
@@ -2109,7 +2140,7 @@ defineExpose({
                     </div>
                   </div>
                 </div>
-                <div v-else-if="showResultRunSelector" class="min-w-0" :class="{ 'flex-1': visibleResultItems.length === 0 }">
+                <div v-else-if="showResultRunSelector" class="min-w-0" :class="{ 'flex-1': visibleResultItems.length <= 1 }">
                   <DropdownMenu>
                     <DropdownMenuTrigger as-child>
                       <Button variant="ghost" size="sm" class="h-6 max-w-48 gap-1 px-2 text-xs">
@@ -2119,7 +2150,7 @@ defineExpose({
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="start" class="w-48">
                       <CustomContextMenu v-for="run in resultRuns" :key="run.id" :items="() => resultRunContextMenuItems(run)" v-slot="{ onContextMenu }">
-                        <DropdownMenuItem class="flex items-center gap-2 pr-1" @select="selectResultRunFromTab(run.id)" @contextmenu="onContextMenu">
+                        <DropdownMenuItem class="flex items-center gap-2 pr-1" @select="selectResultRunFromTab(run.id)" @contextmenu="onContextMenu" @mousedown.middle.stop.prevent="removeResultRun(run.id)">
                           <Check v-if="run.active" class="h-3.5 w-3.5 shrink-0" />
                           <span v-else class="h-3.5 w-3.5 shrink-0" />
                           <Pin v-if="run.pinned" class="h-3 w-3 shrink-0 fill-current text-primary" />
@@ -2139,9 +2170,9 @@ defineExpose({
                   </DropdownMenu>
                 </div>
                 <div v-else-if="resultRuns.length > 0" class="min-w-0 flex-1" />
-                <span v-if="resultRuns.length > 0 && visibleResultItems.length > 0" class="mx-1 h-4 w-px shrink-0 bg-border" />
+                <span v-if="resultRuns.length > 0 && visibleResultItems.length > 1" class="mx-1 h-4 w-px shrink-0 bg-border" />
                 <ResultSetNavigator
-                  v-if="visibleResultItems.length > 0"
+                  v-if="resultRuns.length > 0 ? visibleResultItems.length > 1 : visibleResultItems.length > 0"
                   :key="`${activeTab.id}:${activeTab.activeResultRunId ?? 'current'}`"
                   :items="visibleResultItems"
                   :busy="resultBatchBusy"
@@ -2149,6 +2180,7 @@ defineExpose({
                   :active-index="activeTab.activeResultIndex ?? 0"
                   :active="activeOutputView === 'result'"
                   :display-mode="resultRunDisplayMode"
+                  :has-sibling-run-tabs="resultRuns.length > 0"
                   @select="selectResultItem"
                   @copy-sql="copySelectedResultSql"
                   @copy-query-sql="copySelectedResultQueries"
@@ -2443,6 +2475,7 @@ defineExpose({
                       </span>
                       <Switch size="sm" :model-value="!!dataGridRef?.nullColumnsHidden" :disabled="!dataGridRef?.canToggleAllNullColumns" :aria-label="t('grid.hideNullColumns')" @update:model-value="dataGridRef?.toggleAllNullColumns()" />
                     </div>
+                    <DataGridEmptyColumnsControl :count="dataGridRef?.allEmptyColumnCount" :column-count="dataGridRef?.displayableColumnCount" />
                     <DataGridCopyFormatControl
                       :current-label="dataGridRef?.defaultCopyPreferenceLabel ?? '-'"
                       :current-value="dataGridRef?.defaultCopyPreference ?? ''"
@@ -2656,6 +2689,7 @@ defineExpose({
                 :result="activeGridResult!"
                 :sort-column="hasNeo4jNodes ? activeGridSort?.column : activeTab.resultSortColumn"
                 :sort-column-index="hasNeo4jNodes ? activeGridSort?.columnIndex : activeTab.resultSortColumnIndex"
+                :sort-columns="hasNeo4jNodes ? activeGridSort?.columns : activeTab.resultSortColumns"
                 :sort-direction="hasNeo4jNodes ? activeGridSort?.direction : activeTab.resultSortDirection"
                 :sort-mode="hasNeo4jNodes ? 'local' : activeTab.resultSortMode"
                 :database-sort-enabled="!hasNeo4jNodes"
@@ -3144,6 +3178,7 @@ defineExpose({
                 </span>
                 <Switch size="sm" :model-value="!!dataGridRef?.nullColumnsHidden" :disabled="!dataGridRef?.canToggleAllNullColumns" :aria-label="t('grid.hideNullColumns')" @update:model-value="dataGridRef?.toggleAllNullColumns()" />
               </div>
+              <DataGridEmptyColumnsControl :count="dataGridRef?.allEmptyColumnCount" :column-count="dataGridRef?.displayableColumnCount" />
               <DataGridCopyFormatControl
                 :current-label="dataGridRef?.defaultCopyPreferenceLabel ?? '-'"
                 :current-value="dataGridRef?.defaultCopyPreference ?? ''"
@@ -3164,6 +3199,7 @@ defineExpose({
           :result="activeTab.result"
           :sort-column="activeTab.resultSortColumn"
           :sort-column-index="activeTab.resultSortColumnIndex"
+          :sort-columns="activeTab.resultSortColumns"
           :sort-direction="activeTab.resultSortDirection"
           :sort-mode="activeTab.resultSortMode"
           :initial-order-by-input="activeTab.orderByInput"
@@ -3202,7 +3238,9 @@ defineExpose({
           @local-column-filters-change="(filters: Record<string, string[]>) => queryStore.updateDataGridLocalColumnFilters(activeTab.id, filters)"
           @reload="(sql?: string, searchText?: string, whereInput?: string, orderBy?: string, limit?: number, offset?: number, intent?: DataGridReloadIntent) => emit('reload', activeTab.id, sql, searchText, whereInput, orderBy, limit, offset, intent)"
           @paginate="(offset: number, limit: number, whereInput?: string, orderBy?: string, appendResult?: boolean) => emit('paginate', activeTab.id, offset, limit, whereInput, orderBy, appendResult)"
-          @sort="(column: string, columnIndex: number, direction: 'asc' | 'desc' | null, whereInput?: string, mode?: DataGridSortMode, effectiveOrderBy?: string) => emit('sort', activeTab.id, column, columnIndex, direction, whereInput, mode, effectiveOrderBy)"
+          @sort="
+            (column: string, columnIndex: number, direction: 'asc' | 'desc' | null, whereInput?: string, mode?: DataGridSortMode, effectiveOrderBy?: string, columns?: DataGridSortColumn[]) => emit('sort', activeTab.id, column, columnIndex, direction, whereInput, mode, effectiveOrderBy, columns)
+          "
           @change-query-timeout="(connectionId: string) => emit('openConnectionSettings', connectionId, 'advanced')"
         >
           <template v-if="activeTab.result && isQueryExecutionErrorResult(activeTab.result)" #error-actions="{ errorMessage }">

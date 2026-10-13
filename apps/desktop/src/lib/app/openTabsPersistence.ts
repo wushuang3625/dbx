@@ -27,6 +27,8 @@ export interface SavedOpenTab {
   createdAt?: number;
   title: string;
   customTitle?: boolean;
+  /** 用户自定义的标签后缀，取代自动编号 */
+  titleSuffix?: string;
   connectionId: string;
   database: string;
   /** 原连接已被删除但页签被保留时记录的原连接名，用于新建同名连接后重新绑定。 */
@@ -47,6 +49,7 @@ export interface SavedOpenTab {
   resultSortedSql?: string;
   resultSortColumn?: string;
   resultSortColumnIndex?: number;
+  resultSortColumns?: QueryTab["resultSortColumns"];
   resultSortDirection?: QueryTab["resultSortDirection"];
   resultSortMode?: QueryTab["resultSortMode"];
   orderByInput?: string;
@@ -174,6 +177,7 @@ export function serializeOpenTabs(tabs: QueryTab[]): SavedOpenTab[] {
     ...(typeof tab.createdAt === "number" ? { createdAt: tab.createdAt } : {}),
     title: tab.title,
     ...(tab.customTitle ? { customTitle: true } : {}),
+    ...(tab.titleSuffix?.trim() ? { titleSuffix: tab.titleSuffix.trim() } : {}),
     connectionId: tab.connectionId,
     database: tab.database,
     ...(tab.detachedConnectionName ? { detachedConnectionName: tab.detachedConnectionName } : {}),
@@ -195,6 +199,7 @@ export function serializeOpenTabs(tabs: QueryTab[]): SavedOpenTab[] {
     ...(tab.resultSortedSql !== undefined ? { resultSortedSql: tab.resultSortedSql } : {}),
     ...(tab.resultSortColumn !== undefined ? { resultSortColumn: tab.resultSortColumn } : {}),
     ...(tab.resultSortColumnIndex !== undefined ? { resultSortColumnIndex: tab.resultSortColumnIndex } : {}),
+    ...(tab.resultSortColumns !== undefined ? { resultSortColumns: tab.resultSortColumns } : {}),
     ...(tab.resultSortDirection !== undefined ? { resultSortDirection: tab.resultSortDirection } : {}),
     ...(tab.resultSortMode !== undefined ? { resultSortMode: tab.resultSortMode } : {}),
     ...(tab.orderByInput !== undefined ? { orderByInput: tab.orderByInput } : {}),
