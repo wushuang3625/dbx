@@ -2,6 +2,7 @@ import { computed, ref, watch, type Ref } from "vue";
 import type { ConnectionConfig } from "@/types/database";
 import type { SqlCompletionTable } from "@/lib/sql/sqlCompletion";
 import { resolveDefaultDatabase } from "@/lib/database/defaultDatabase";
+import { buildSimpleObjectTreeNodes } from "@/lib/table/tableTree";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSavedSqlStore } from "@/stores/savedSqlStore";
 import * as api from "@/lib/backend/api";
@@ -322,7 +323,9 @@ export function useQuickOpen(options: UseQuickOpenOptions = {}) {
   const searchQuery = ref("");
   const selectedIndex = ref(0);
   const remoteItems = ref<QuickOpenItem[]>([]);
+  const remoteSearching = ref(false);
   const sqlFileItems = ref<QuickOpenItem[]>([]);
+  const sqlFilesLoading = ref(false);
   let remoteSearchGeneration = 0;
   let remoteSearchTimer: ReturnType<typeof setTimeout> | undefined;
   let activeRemoteRequests = 0;
@@ -331,7 +334,7 @@ export function useQuickOpen(options: UseQuickOpenOptions = {}) {
   let sqlFilesLoadingPromise: Promise<void> | null = null;
   let sqlFilesLoadGeneration = 0;
   const pluginWorkbenchItems = ref<QuickOpenItem[]>([]);
-  let pluginWorkbenchesLoading = false;
+  const pluginWorkbenchesLoading = ref(false);
 
   // --- Content search mode (global search of local SQL/text file contents) ---
   const contentMode = ref(false);
@@ -339,6 +342,7 @@ export function useQuickOpen(options: UseQuickOpenOptions = {}) {
   const contentItems = ref<MatchedItem[]>([]);
   let contentSearchGeneration = 0;
   let contentSearchTimer: ReturnType<typeof setTimeout> | undefined;
+  const searching = computed(() => (contentMode.value ? contentSearching.value : Boolean(searchQuery.value.trim()) && (remoteSearching.value || sqlFilesLoading.value || pluginWorkbenchesLoading.value)));
 
   interface ContentGroup {
     header: string;
@@ -469,6 +473,7 @@ export function useQuickOpen(options: UseQuickOpenOptions = {}) {
 
   async function loadExternalSqlFiles(): Promise<void> {
     if (sqlFilesLoaded || sqlFilesLoadingPromise) return sqlFilesLoadingPromise ?? undefined;
+    sqlFilesLoading.value = true;
     const generation = sqlFilesLoadGeneration;
     const loadingPromise = (async () => {
       try {
@@ -517,7 +522,10 @@ export function useQuickOpen(options: UseQuickOpenOptions = {}) {
     try {
       await loadingPromise;
     } finally {
-      if (sqlFilesLoadingPromise === loadingPromise) sqlFilesLoadingPromise = null;
+      if (sqlFilesLoadingPromise === loadingPromise) {
+        sqlFilesLoadingPromise = null;
+        sqlFilesLoading.value = false;
+      }
     }
     if (generation !== sqlFilesLoadGeneration) await loadExternalSqlFiles();
   }
@@ -540,8 +548,8 @@ export function useQuickOpen(options: UseQuickOpenOptions = {}) {
    * Re-runs on every dialog open so installs/uninstalls show up without a restart.
    */
   async function loadPluginWorkbenches(): Promise<void> {
-    if (pluginWorkbenchesLoading) return;
-    pluginWorkbenchesLoading = true;
+    if (pluginWorkbenchesLoading.value) return;
+    pluginWorkbenchesLoading.value = true;
     try {
       const registry = createFrontendPluginRegistry(await api.listPlugins(), currentLocale());
       const connectionBound = new Set(
@@ -567,7 +575,7 @@ export function useQuickOpen(options: UseQuickOpenOptions = {}) {
     } catch {
       // Plugin listings are best-effort; quick open keeps working without them.
     } finally {
-      pluginWorkbenchesLoading = false;
+      pluginWorkbenchesLoading.value = false;
     }
   }
 
@@ -600,13 +608,38 @@ export function useQuickOpen(options: UseQuickOpenOptions = {}) {
       // Connections may live under sidebar groups, so locate their tree recursively.
       const connectionTreeNode = findConnectionTreeNode(treeNodes, conn.id);
       const connectionTreeNodes = connectionTreeNode?.children || treeNodes.filter((node) => node.connectionId === conn.id);
-      if (connectionTreeNodes.length === 0) continue;
 
       // Process tree nodes to extract databases and tables
       processDatabaseTreeNodes(connectionTreeNodes, conn, items);
+
+      // Disconnect clears the live tree. The durable index is hydrated separately
+      // and remains searchable without reopening the connection or its tree.
+      const index = connectionStore.globalObjectSearchEnabled ? connectionStore.sidebarObjectIndexes?.[conn.id] : undefined;
+      for (const scope of index?.scopes ?? []) {
+        processDatabaseTreeNodes(scope.path.slice(1), conn, items);
+        processDatabaseTreeNodes(
+          buildSimpleObjectTreeNodes({
+            nodeId: scope.path[scope.path.length - 1].id,
+            connectionId: conn.id,
+            database: scope.database,
+            schema: scope.nodeSchema,
+            objects: scope.objects,
+            databaseType: index?.databaseType,
+          }),
+          conn,
+          items,
+        );
+      }
     }
 
-    return items;
+    // Prefer live entries when their names also occur in the cached index.
+    const seen = new Set<string>();
+    return items.filter((item) => {
+      const key = quickOpenItemKey(item);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   });
 
   function processDatabaseTreeNodes(nodes: any[], conn: ConnectionConfig, items: QuickOpenItem[]): void {
@@ -708,7 +741,7 @@ export function useQuickOpen(options: UseQuickOpenOptions = {}) {
           connectionId: conn.id,
           database: node.database,
           schema: node.schema,
-          objectName: node.label,
+          objectName: node.objectName || node.label,
           connectionName: conn.name,
           searchText: `${conn.name} ${node.database} ${node.schema || ""} ${node.label}`,
         });
@@ -724,7 +757,7 @@ export function useQuickOpen(options: UseQuickOpenOptions = {}) {
           connectionId: conn.id,
           database: node.database,
           schema: node.schema,
-          objectName: node.label,
+          objectName: node.objectName || node.label,
           connectionName: conn.name,
           searchText: `${conn.name} ${node.database} ${node.schema || ""} ${node.label}`,
         });
@@ -847,7 +880,7 @@ export function useQuickOpen(options: UseQuickOpenOptions = {}) {
       if (!quickOpenScopeIncludes(conn.id)) continue;
       // listCompletionTables connects on demand. Keeping disconnected connections
       // out here makes quick-open blind to unloaded tables after a cold start.
-      if (REMOTE_SEARCH_UNSUPPORTED_TYPES.has(conn.db_type)) continue;
+      if (REMOTE_SEARCH_UNSUPPORTED_TYPES.has(conn.db_type) || connectionStore.isConnectionClosedByUser?.(conn.id)) continue;
       const databases = new Set<string>();
       collectConnectionDatabases(connectionStore.treeNodes, conn.id, databases);
       if (conn.database?.trim()) databases.add(conn.database.trim());
@@ -907,24 +940,28 @@ export function useQuickOpen(options: UseQuickOpenOptions = {}) {
 
   async function runRemoteSearch(query: string, generation: number, contexts: Array<{ conn: ConnectionConfig; database: string }>): Promise<void> {
     const groups = contexts.map(() => [] as QuickOpenItem[]);
-    await Promise.all(
-      contexts.map(async ({ conn, database }, index) => {
-        const acquired = await acquireRemoteRequestSlot(generation);
-        if (!acquired) return;
-        try {
-          // A newer query may supersede queued work before it reaches the metadata API.
-          if (generation !== remoteSearchGeneration) return;
-          const tables = await connectionStore.listCompletionTables(conn.id, database, query, REMOTE_SEARCH_RESULTS_PER_REQUEST, undefined, true, undefined, undefined, { activateConnection: false });
-          if (generation !== remoteSearchGeneration) return;
-          groups[index] = tables.slice(0, REMOTE_SEARCH_RESULTS_PER_REQUEST).map((table) => remoteTableItem(table, conn, database));
-          remoteItems.value = groups.flat().slice(0, REMOTE_SEARCH_MAX_RESULTS);
-        } catch {
-          return;
-        } finally {
-          releaseRemoteRequestSlot();
-        }
-      }),
-    );
+    try {
+      await Promise.all(
+        contexts.map(async ({ conn, database }, index) => {
+          const acquired = await acquireRemoteRequestSlot(generation);
+          if (!acquired) return;
+          try {
+            // A newer query may supersede queued work before it reaches the metadata API.
+            if (generation !== remoteSearchGeneration || connectionStore.isConnectionClosedByUser?.(conn.id)) return;
+            const tables = await connectionStore.listCompletionTables(conn.id, database, query, REMOTE_SEARCH_RESULTS_PER_REQUEST, undefined, true, undefined, undefined, { activateConnection: false });
+            if (generation !== remoteSearchGeneration) return;
+            groups[index] = tables.slice(0, REMOTE_SEARCH_RESULTS_PER_REQUEST).map((table) => remoteTableItem(table, conn, database));
+            remoteItems.value = groups.flat().slice(0, REMOTE_SEARCH_MAX_RESULTS);
+          } catch {
+            return;
+          } finally {
+            releaseRemoteRequestSlot();
+          }
+        }),
+      );
+    } finally {
+      if (generation === remoteSearchGeneration) remoteSearching.value = false;
+    }
   }
 
   /**
@@ -950,12 +987,14 @@ export function useQuickOpen(options: UseQuickOpenOptions = {}) {
     if (remoteSearchTimer) clearTimeout(remoteSearchTimer);
     remoteSearchTimer = undefined;
     remoteItems.value = [];
+    remoteSearching.value = false;
 
     const normalizedQuery = rawQuery.trim();
     if (normalizedQuery.length < REMOTE_SEARCH_MIN_QUERY_LENGTH) return;
     const contexts = remoteSearchContexts();
     if (contexts.length === 0) return;
 
+    remoteSearching.value = true;
     remoteSearchTimer = setTimeout(() => {
       remoteSearchTimer = undefined;
       void runRemoteSearch(normalizedQuery, generation, contexts);
@@ -1107,6 +1146,7 @@ export function useQuickOpen(options: UseQuickOpenOptions = {}) {
         clearContentResults();
         return;
       }
+      contentSearching.value = true;
       contentSearchTimer = setTimeout(() => {
         contentSearchTimer = undefined;
         void runContentSearch(normalizedQuery, generation);
@@ -1136,6 +1176,7 @@ export function useQuickOpen(options: UseQuickOpenOptions = {}) {
     selectedIndex,
     selectedItem,
     contentMode,
+    searching,
     contentSearching,
     contentGroups,
     contentSelectedItem,

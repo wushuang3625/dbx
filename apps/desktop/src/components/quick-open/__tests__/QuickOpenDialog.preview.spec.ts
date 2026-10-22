@@ -4,7 +4,7 @@ import { createApp, h, nextTick, reactive, type App } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorView } from "@codemirror/view";
 
-const mocks = vi.hoisted(() => ({ select: vi.fn(), updateOpen: vi.fn(), read: vi.fn(), write: vi.fn(), toast: vi.fn(), folders: [] as string[], listFiles: vi.fn() }));
+const mocks = vi.hoisted(() => ({ select: vi.fn(), updateOpen: vi.fn(), read: vi.fn(), write: vi.fn(), toast: vi.fn(), folders: [] as string[], listFiles: vi.fn(), search: vi.fn() }));
 vi.mock("@/stores/connectionStore", () => ({ useConnectionStore: () => ({ connections: [], treeNodes: [], connectedIds: new Set() }) }));
 vi.mock("@/stores/savedSqlStore", () => ({ useSavedSqlStore: () => ({ allFiles: [] }) }));
 vi.mock("@/stores/settingsStore", () => ({ useSettingsStore: () => ({ editorSettings: { shortcuts: {}, fontSize: 13, fontFamily: "monospace", theme: "app" } }) }));
@@ -30,10 +30,7 @@ vi.mock("@/lib/backend/api", () => ({
   listSqlFilesInFolder: mocks.listFiles,
   readExternalSqlFileSnapshot: async (...args: unknown[]) => ({ content: await mocks.read(...args), version: { contentHash: "original", modifiedNs: "1", sizeBytes: 26 }, encoding: "utf8" }),
   writeExternalSqlFile: mocks.write,
-  globalSearch: async () => [
-    { path: "/sql/first.sql", fileName: "first.sql", line: 2, column: 8, lineText: "SELECT needle;", matchText: "needle" },
-    { path: "/sql/second.sql", fileName: "second.sql", line: 1, column: 8, lineText: "SELECT needle, 2;", matchText: "needle" },
-  ],
+  globalSearch: mocks.search,
 }));
 vi.mock("@/components/ui/dialog", async () => {
   const { defineComponent, h } = await import("vue");
@@ -59,7 +56,7 @@ import i18n from "@/i18n";
 let app: App;
 let host: HTMLElement;
 
-async function mountSearch() {
+async function mountSearch(waitForResults = true) {
   host = document.createElement("div");
   document.body.appendChild(host);
   const props = reactive({ open: false, initialContentMode: true, onSelect: mocks.select, "onUpdate:open": mocks.updateOpen });
@@ -71,8 +68,10 @@ async function mountSearch() {
   const input = host.querySelector<HTMLInputElement>("input")!;
   input.value = "needle";
   input.dispatchEvent(new Event("input", { bubbles: true }));
-  await vi.waitFor(() => expect(host.querySelectorAll("[data-selected]")).toHaveLength(2));
-  await vi.waitFor(() => expect(host.querySelector(".cm-editor")).not.toBeNull(), { timeout: 10000 });
+  if (waitForResults) {
+    await vi.waitFor(() => expect(host.querySelectorAll("[data-selected]")).toHaveLength(2));
+    await vi.waitFor(() => expect(host.querySelector(".cm-editor")).not.toBeNull(), { timeout: 10000 });
+  } else await nextTick();
   return { input, props, rows: [...host.querySelectorAll<HTMLElement>("[data-selected]")] };
 }
 
@@ -84,6 +83,10 @@ beforeEach(() => {
   mocks.read.mockReset().mockResolvedValue("-- heading\nSELECT needle;");
   mocks.write.mockReset().mockResolvedValue({ kind: "written", version: { contentHash: "saved", modifiedNs: "2", sizeBytes: 30 } });
   mocks.toast.mockReset();
+  mocks.search.mockReset().mockResolvedValue([
+    { path: "/sql/first.sql", fileName: "first.sql", line: 2, column: 8, lineText: "SELECT needle;", matchText: "needle" },
+    { path: "/sql/second.sql", fileName: "second.sql", line: 1, column: 8, lineText: "SELECT needle, 2;", matchText: "needle" },
+  ]);
   vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(() => {});
 });
 afterEach(() => {
@@ -143,6 +146,24 @@ describe("object search metadata regression", () => {
 });
 
 describe("content search preview navigation", () => {
+  it("announces pending searches before showing an empty result", async () => {
+    let finish!: (results: never[]) => void;
+    mocks.search.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await mountSearch(false);
+    expect(host.querySelector('[aria-busy="true"]')).not.toBeNull();
+    expect(host.querySelector('[role="status"]')?.textContent).toContain(i18n.global.t("quickOpen.searchingContent"));
+    expect(host.textContent).not.toContain(i18n.global.t("quickOpen.noResults"));
+    await vi.waitFor(() => expect(mocks.search).toHaveBeenCalledOnce());
+    finish([]);
+    await vi.waitFor(() => expect(host.querySelector('[aria-busy="true"]')).toBeNull());
+    expect(host.textContent).toContain(i18n.global.t("quickOpen.noResults"));
+  });
+
   it("pins the preview while editing and resumes navigation after saving", async () => {
     const { input, rows, props } = await mountSearch();
     host.querySelector<HTMLButtonElement>('button[aria-label="Edit"]')!.click();

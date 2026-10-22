@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { translateBackendError } from "@/i18n/backend-errors";
 import { Search, X, ListOrdered, ArrowDownAZ, ArrowUpZA, Server, Database, FolderTree, Table2, Eye, RotateCcw, Loader2, Unplug } from "@lucide/vue";
 import { useConnectionStore } from "@/stores/connectionStore";
+import { mergeSidebarObjectIndexHits } from "@/lib/sidebar/sidebarObjectIndex";
 import { useQueryStore } from "@/stores/queryStore";
 import { useSavedSqlStore } from "@/stores/savedSqlStore";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -304,7 +305,7 @@ watch(
   },
 );
 
-watch([deferredSearchQuery, regexMode], ([newQuery, isRegexMode], [oldQuery, wasRegexMode]) => {
+watch([deferredSearchQuery, regexMode, () => settingsStore.editorSettings.sidebarGlobalSearchLocal], ([newQuery, isRegexMode], [oldQuery, wasRegexMode]) => {
   if (!isRegexMode || !newQuery) regexTableSearchScopes.value = [];
   // The regex source is a client-side projection; the remote tree-loading
   // search state must never carry it, or explicit node expansion would leak
@@ -829,6 +830,7 @@ const filteredNodes = computed(() => {
   nodes = filterGloballyIndexedRegexTables(nodes);
 
   const q = deferredSearchQuery.value;
+  if (settingsStore.editorSettings.globalObjectSearchEnabled) nodes = mergeSidebarObjectIndexHits(nodes, Object.values(store.sidebarObjectIndexes), q, settingsStore.editorSettings.sidebarObjectDisplay === "grouped", regexMode.value);
   nodes = filterSidebarTree(nodes, q, searchCollapsedIds.value, searchableNodeTypes.value, {
     regexMode: regexMode.value,
     resolveLabel: (node) => (node.type === "nacos-access-control" ? t("nacos.accessControlSidebarLabel") : node.label),
@@ -839,6 +841,9 @@ const filteredNodes = computed(() => {
 
   return nodes;
 });
+
+const objectIndexBuilding = computed(() => settingsStore.editorSettings.globalObjectSearchEnabled && Object.values(store.sidebarObjectIndexStatuses).some((status) => status === "building"));
+const objectIndexIncomplete = computed(() => settingsStore.editorSettings.globalObjectSearchEnabled && Object.values(store.sidebarObjectIndexStatuses).some((status) => status === "incomplete" || status === "failed"));
 
 const projectedConnectionIds = computed<ReadonlySet<string> | null>(() => {
   if (!isRootListPartial.value && !deferredSearchQuery.value) return null;
@@ -2895,8 +2900,15 @@ defineExpose({
             </LightDropdown>
           </span>
         </LightTooltip>
+        <LightTooltip v-if="settingsStore.editorSettings.globalObjectSearchEnabled" :text="t('sidebar.refreshObjectIndex')" side="top" :delay="300">
+          <button type="button" class="shrink-0 h-6 w-6 flex items-center justify-center rounded border border-border text-muted-foreground hover:bg-accent disabled:opacity-50" :aria-label="t('sidebar.refreshObjectIndex')" :disabled="objectIndexBuilding" @click="store.refreshSidebarObjectIndex()">
+            <Loader2 v-if="objectIndexBuilding" class="h-3.5 w-3.5 animate-spin" />
+            <RotateCcw v-else class="h-3.5 w-3.5" />
+          </button>
+        </LightTooltip>
         <ActiveConnectionFilterButton :active-connection-count="store.connectedIds.size" :pressed="showConnectedConnectionsOnly" @toggle="showConnectedConnectionsOnly = !showConnectedConnectionsOnly" />
       </div>
+      <p v-if="objectIndexBuilding || objectIndexIncomplete" class="px-1 pt-1 text-xs text-muted-foreground" role="status">{{ t(objectIndexBuilding ? "sidebar.objectIndexBuilding" : "sidebar.objectIndexIncomplete") }}</p>
     </div>
     <CustomContextMenu ref="sidebarContextMenuRef" :items="sidebarContextMenuItems" v-slot="contextMenuSlot">
       <div v-if="flatNodes.length > 0 && useVirtualTree" ref="treeScrollShellRef" class="connection-tree-scroll-shell relative min-h-0 flex-1" :class="{ 'connection-tree-scroll-shell--horizontal-overflow': hasSidebarHorizontalOverflow }">

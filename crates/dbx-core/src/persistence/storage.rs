@@ -8522,6 +8522,12 @@ fn prune_schema_cache(conn: &Connection, policy: SchemaCachePolicy, now_ms: i64)
 
 impl Storage {
     pub async fn save_schema_cache(&self, cache_key: &str, payload: &serde_json::Value) -> Result<(), String> {
+        // Saved-connection search indexes are durable inventories, refreshed
+        // explicitly by the user. Keep them outside the expiring/LRU schema cache.
+        if cache_key.starts_with("sidebar-object-index-v1:") {
+            let json = serde_json::to_vec(payload).map_err(|error| error.to_string())?;
+            return self.save_state(cache_key, &json, "application/json").await;
+        }
         self.save_schema_cache_with_policy(cache_key, payload, SchemaCachePolicy::default()).await
     }
 
@@ -8561,6 +8567,13 @@ impl Storage {
     }
 
     pub async fn load_schema_cache(&self, cache_key: &str) -> Result<Option<serde_json::Value>, String> {
+        if cache_key.starts_with("sidebar-object-index-v1:") {
+            return self
+                .load_state(cache_key)
+                .await?
+                .map(|(bytes, _)| serde_json::from_slice(&bytes).map_err(|error| error.to_string()))
+                .transpose();
+        }
         let cache_key = cache_key.to_string();
         let now_ms = unix_timestamp_millis();
         let json: Option<String> = self
@@ -8593,6 +8606,16 @@ impl Storage {
     }
 
     pub async fn delete_schema_cache_prefix(&self, prefix: &str) -> Result<(), String> {
+        if prefix.starts_with("sidebar-object-index-v1:") {
+            let prefix = prefix.to_string();
+            return self
+                .with_conn(move |conn| {
+                    conn.execute("DELETE FROM state_store WHERE substr(key, 1, length(?1)) = ?1", [prefix])
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                })
+                .await;
+        }
         let prefix = prefix.to_string();
         let prefix_len = prefix.len() as i64;
         self.with_conn(move |conn| {
@@ -13243,6 +13266,40 @@ mod tests {
         assert_eq!(super::normalize_metadata_cache_max_memory_mb(256), 256);
         assert_eq!(super::normalize_metadata_cache_max_memory_mb(512), 512);
         assert_eq!(super::normalize_metadata_cache_max_memory_mb(513), 64);
+    }
+
+    #[tokio::test]
+    async fn sidebar_object_index_survives_schema_cache_pruning_and_restart_until_explicit_deletion() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("storage.db");
+        let storage = crate::persistence::test_storage::open(&path).await.unwrap();
+        let first = "sidebar-object-index-v1:conn-a:";
+        let second = "sidebar-object-index-v1:conn-ab:";
+        let payload = serde_json::json!({ "version": 1, "indexedAt": 1, "objects": ["orders"] });
+        storage.save_schema_cache(first, &payload).await.unwrap();
+        storage.save_schema_cache(second, &payload).await.unwrap();
+        // Even a zero TTL and zero-byte cache budget must leave the durable
+        // search inventory intact. Ordinary metadata still follows its policy.
+        storage
+            .save_schema_cache_with_policy(
+                "ordinary-cache",
+                &payload,
+                super::SchemaCachePolicy {
+                    max_age_millis: 0,
+                    max_entries: 0,
+                    max_total_bytes: 0,
+                    max_connection_bytes: 0,
+                },
+            )
+            .await
+            .unwrap();
+        drop(storage);
+        let restarted = crate::persistence::test_storage::open(&path).await.unwrap();
+        assert_eq!(restarted.load_schema_cache(first).await.unwrap(), Some(payload.clone()));
+        assert_eq!(restarted.load_schema_cache("ordinary-cache").await.unwrap(), None);
+        restarted.delete_schema_cache_prefix(first).await.unwrap();
+        assert_eq!(restarted.load_schema_cache(first).await.unwrap(), None);
+        assert_eq!(restarted.load_schema_cache(second).await.unwrap(), Some(payload));
     }
 
     #[tokio::test]

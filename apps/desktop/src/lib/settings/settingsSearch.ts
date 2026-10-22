@@ -366,6 +366,7 @@ export const SETTINGS_SEARCH_DEFINITIONS: readonly SettingsSearchDefinition[] = 
     keywordKeys: ["settings.sidebarObjectInfoModeCommentInline", "settings.sidebarObjectInfoModeCommentAligned", "settings.sidebarObjectInfoModeCommentRight", "settings.sidebarObjectInfoModeSize", "settings.sidebarObjectInfoModeCommentAndSize", "settings.sidebarObjectInfoModeHidden"],
   },
   { id: "navigation-table-search", category: "navigation", titleKey: "settings.sidebarTableSearchEnabled", descriptionKey: "settings.sidebarTableSearchEnabledDescription", targetId: "navigation" },
+  { id: "navigation-global-object-search", category: "navigation", titleKey: "settings.globalObjectSearchEnabled", descriptionKey: "settings.globalObjectSearchEnabledDescription", targetId: "navigation" },
   { id: "navigation-search-opened-databases-only", category: "navigation", titleKey: "settings.sidebarSearchOpenedDatabasesOnly", descriptionKey: "settings.sidebarSearchOpenedDatabasesOnlyDescription", targetId: "navigation" },
   { id: "navigation-active-node", category: "navigation", titleKey: "settings.autoSelectActiveSidebarNode", descriptionKey: "settings.autoSelectActiveSidebarNodeDescription", targetId: "navigation" },
   { id: "navigation-sidebar-pin-default-database", category: "navigation", titleKey: "settings.sidebarPinDefaultDatabase", descriptionKey: "settings.sidebarPinDefaultDatabaseDescription", targetId: "navigation" },

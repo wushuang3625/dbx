@@ -1,4 +1,4 @@
-import { effectScope, nextTick, ref } from "vue";
+import { effectScope, nextTick, reactive, ref } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { matchQuickOpenText, useQuickOpen } from "@/composables/useQuickOpen";
 import * as api from "@/lib/backend/api";
@@ -6,6 +6,7 @@ import { getSqlFileFilter, getSqlFileFolderPaths, sqlFileFoldersVersion } from "
 import { setQuickOpenScopeIds } from "@/lib/quickOpen/quickOpenScope";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSavedSqlStore } from "@/stores/savedSqlStore";
+import type { SidebarObjectIndex } from "@/lib/sidebar/sidebarObjectIndex";
 
 vi.mock("@/stores/connectionStore", () => ({
   useConnectionStore: vi.fn(),
@@ -19,6 +20,7 @@ vi.mock("@/lib/backend/api", () => ({
   listSqlFilesInFolder: vi.fn(),
   readExternalSqlFile: vi.fn(),
   listPlugins: vi.fn(),
+  globalSearch: vi.fn(),
 }));
 
 vi.mock("@/lib/sqlFile/sqlFileFolders", async () => {
@@ -1227,6 +1229,107 @@ describe("useQuickOpen", () => {
     });
   });
 
+  describe("persistent object indexes", () => {
+    function indexedStore() {
+      const index: SidebarObjectIndex = {
+        version: 1,
+        connectionId: "conn1",
+        binding: "test",
+        databaseType: "postgres",
+        indexedAt: 1,
+        complete: true,
+        scopes: [
+          {
+            path: [
+              { id: "conn1", type: "connection", label: "PG", connectionId: "conn1" },
+              { id: "conn1:warehouse", type: "database", label: "warehouse", connectionId: "conn1", database: "warehouse" },
+              { id: "conn1:warehouse:reporting", type: "schema", label: "reporting", connectionId: "conn1", database: "warehouse", schema: "reporting" },
+            ],
+            database: "warehouse",
+            schema: "reporting",
+            nodeSchema: "reporting",
+            objects: [
+              { name: "order_items", object_type: "TABLE" },
+              { name: "order_view", object_type: "VIEW" },
+              { name: "order_summary", object_type: "MATERIALIZED_VIEW" },
+              { name: "convert_order", object_type: "FUNCTION", signature: "integer" },
+              { name: "refresh_orders", object_type: "PROCEDURE" },
+            ],
+          },
+        ],
+      };
+      const store = reactive({
+        connections: [{ id: "conn1", name: "PG", db_type: "postgres" }],
+        connectedIds: new Set<string>(),
+        treeNodes: [] as any[],
+        globalObjectSearchEnabled: true,
+        sidebarObjectIndexes: { conn1: index } as Record<string, SidebarObjectIndex>,
+      });
+      vi.mocked(useConnectionStore).mockReturnValue(store as any);
+      return store;
+    }
+
+    it("removes cached global results immediately when the setting is disabled", () => {
+      const store = indexedStore();
+      const { setQuery, filteredItems } = useQuickOpen();
+      setQuery("order_items");
+      expect(filteredItems.value.some((item) => item.label === "order_items")).toBe(true);
+      store.globalObjectSearchEnabled = false;
+      expect(filteredItems.value.some((item) => item.label === "order_items")).toBe(false);
+      store.globalObjectSearchEnabled = true;
+      expect(filteredItems.value.some((item) => item.label === "order_items")).toBe(true);
+    });
+
+    it("finds cached objects and scopes after a cold start with an empty connection tree", () => {
+      indexedStore();
+      const { filteredItems, setQuery } = useQuickOpen();
+
+      setQuery("order");
+      expect(filteredItems.value).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: "table", label: "order_items", tableName: "order_items", connectionId: "conn1", database: "warehouse", schema: "reporting" }),
+          expect.objectContaining({ type: "view", objectName: "order_view" }),
+          expect.objectContaining({ type: "materialized_view", objectName: "order_summary" }),
+          expect.objectContaining({ type: "function", label: "convert_order(integer)", objectName: "convert_order" }),
+          expect.objectContaining({ type: "procedure", objectName: "refresh_orders" }),
+        ]),
+      );
+      setQuery("oi");
+      expect(filteredItems.value[0]).toMatchObject({ label: "order_items", matchIndices: [0, 6] });
+      setQuery("reporting");
+      expect(filteredItems.value).toContainEqual(expect.objectContaining({ type: "schema", schema: "reporting" }));
+    });
+
+    it("keeps cached results after closing a connection and deduplicates the live tree", () => {
+      const store = indexedStore();
+      store.treeNodes = [{ id: "conn1", type: "connection", connectionId: "conn1", children: [{ type: "table", label: "order_items", database: "warehouse", schema: "reporting" }] }];
+      const { filteredItems, setQuery } = useQuickOpen();
+      expect(filteredItems.value.filter((item) => item.label === "order_items")).toHaveLength(1);
+      setQuery("order_items");
+      expect(filteredItems.value.filter((item) => item.label === "order_items")).toHaveLength(1);
+
+      store.treeNodes[0].children = [];
+      expect(filteredItems.value).toContainEqual(expect.objectContaining({ type: "table", label: "order_items", database: "warehouse", schema: "reporting" }));
+    });
+
+    it("reacts to hydration and invalidation and ignores indexes of deleted connections", () => {
+      const store = indexedStore();
+      const index = store.sidebarObjectIndexes.conn1;
+      store.sidebarObjectIndexes = {};
+      const { filteredItems, setQuery } = useQuickOpen();
+      setQuery("order_items");
+      expect(filteredItems.value).toEqual([]);
+
+      store.sidebarObjectIndexes = { conn1: index };
+      expect(filteredItems.value).toHaveLength(1);
+      store.connections = [];
+      expect(filteredItems.value).toEqual([]);
+      store.connections = [{ id: "conn1", name: "PG", db_type: "postgres" }];
+      store.sidebarObjectIndexes = {};
+      expect(filteredItems.value).toEqual([]);
+    });
+  });
+
   describe("remote metadata search", () => {
     beforeEach(() => {
       vi.useFakeTimers();
@@ -1259,6 +1362,64 @@ describe("useQuickOpen", () => {
       await vi.advanceTimersByTimeAsync(200);
       await flushAsyncWork();
     }
+
+    it("reports searching throughout debounce and metadata loading, then settles on completion", async () => {
+      const pending = deferred<Array<{ name: string; type: "table" }>>();
+      vi.mocked(useConnectionStore).mockReturnValue(remoteSearchStore({ listCompletionTables: vi.fn(() => pending.promise) }) as any);
+      const { searching, setQuery } = useQuickOpen();
+      setQuery("users");
+      expect(searching.value).toBe(true);
+      await runDebouncedSearch();
+      expect(searching.value).toBe(true);
+      pending.resolve([{ name: "users", type: "table" }]);
+      await flushAsyncWork();
+      expect(searching.value).toBe(false);
+    });
+
+    it("does not let an older response hide the newer search indicator", async () => {
+      const first = deferred<never[]>();
+      const second = deferred<never[]>();
+      vi.mocked(useConnectionStore).mockReturnValue(remoteSearchStore({ listCompletionTables: vi.fn((_id, _database, query) => (query === "first" ? first.promise : second.promise)) }) as any);
+      const { searching, setQuery } = useQuickOpen();
+      setQuery("first");
+      await runDebouncedSearch();
+      setQuery("second");
+      await runDebouncedSearch();
+      first.resolve([]);
+      await flushAsyncWork();
+      expect(searching.value).toBe(true);
+      second.resolve([]);
+      await flushAsyncWork();
+      expect(searching.value).toBe(false);
+    });
+
+    it("settles searching after metadata failure and clears pending searches with an empty query", async () => {
+      vi.mocked(useConnectionStore).mockReturnValue(remoteSearchStore({ listCompletionTables: vi.fn().mockRejectedValue(new Error("Unavailable")) }) as any);
+      const { searching, setQuery } = useQuickOpen();
+      setQuery("users");
+      await runDebouncedSearch();
+      expect(searching.value).toBe(false);
+      setQuery("order_items");
+      expect(searching.value).toBe(true);
+      setQuery("");
+      expect(searching.value).toBe(false);
+    });
+
+    it("reports content searching from debounce until the file search completes", async () => {
+      const pending = deferred<never[]>();
+      vi.mocked(getSqlFileFolderPaths).mockReturnValue(["/sql"]);
+      vi.mocked(api.globalSearch).mockReturnValue(pending.promise);
+      vi.mocked(useConnectionStore).mockReturnValue(remoteSearchStore({ listCompletionTables: undefined }) as any);
+      const { searching, setQuery, setContentMode } = useQuickOpen();
+      setContentMode(true);
+      setQuery("needle");
+      expect(searching.value).toBe(true);
+      await runDebouncedSearch();
+      expect(searching.value).toBe(true);
+      pending.resolve([]);
+      await flushAsyncWork();
+      expect(searching.value).toBe(false);
+    });
 
     it("finds unloaded tables through server metadata", async () => {
       const mockStore = remoteSearchStore({
@@ -1350,6 +1511,30 @@ describe("useQuickOpen", () => {
       await runDebouncedSearch();
 
       expect(mockStore.listCompletionTables).toHaveBeenCalledWith("conn1", "app", "users", 25, undefined, true, undefined, undefined, { activateConnection: false });
+    });
+
+    it("does not reconnect an explicitly user-closed connection while searching", async () => {
+      const mockStore = remoteSearchStore({ connectedIds: new Set<string>(), isConnectionClosedByUser: () => true });
+      vi.mocked(useConnectionStore).mockReturnValue(mockStore as any);
+
+      const { setQuery } = useQuickOpen();
+      setQuery("users");
+      await runDebouncedSearch();
+
+      expect(mockStore.listCompletionTables).not.toHaveBeenCalled();
+    });
+
+    it("checks a connection closed during the debounce before requesting metadata", async () => {
+      let closed = false;
+      const mockStore = remoteSearchStore({ isConnectionClosedByUser: () => closed });
+      vi.mocked(useConnectionStore).mockReturnValue(mockStore as any);
+
+      const { setQuery } = useQuickOpen();
+      setQuery("users");
+      closed = true;
+      await runDebouncedSearch();
+
+      expect(mockStore.listCompletionTables).not.toHaveBeenCalled();
     });
 
     it("prioritizes the active connection before applying the remote request cap", async () => {

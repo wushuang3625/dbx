@@ -14,6 +14,7 @@ const { store, settings, backend } = vi.hoisted(() => ({
     newConnectionGroupId: null,
     selectedConnectionGroupId: null,
     addConnection: vi.fn(),
+    refreshSidebarObjectIndex: vi.fn().mockResolvedValue([]),
     updateConnection: vi.fn(),
     connect: vi.fn(),
     ensureConnected: vi.fn(),
@@ -264,6 +265,7 @@ describe("ConnectionDialog deep-link edit confirmation", () => {
     expect(backend.connectDb).not.toHaveBeenCalled();
     expect(backend.testConnectionWithInfo).not.toHaveBeenCalled();
     expect(backend.listDatabases).not.toHaveBeenCalled();
+    expect(store.refreshSidebarObjectIndex).not.toHaveBeenCalled();
   });
 
   it("dismisses the draft without persisting or connecting", async () => {
@@ -288,6 +290,7 @@ describe("ConnectionDialog deep-link edit confirmation", () => {
     await settle();
 
     expect(store.updateConnection).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(store.refreshSidebarObjectIndex).toHaveBeenCalledWith("saved-production"));
     expect(store.updateConnection).toHaveBeenCalledWith(
       expect.objectContaining({
         id: "saved-production",

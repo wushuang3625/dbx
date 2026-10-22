@@ -61,11 +61,23 @@ Object-tree search can match:
 - Object paths, column comments, and table comments
 - Loaded metadata and table lists that support server-side filtering
 
-Some searches pass the keyword to the driver with debouncing, avoiding a full table load first. You can also restrict search by node type or use local table search inside the active database.
+Enable **Global object search across connections** in **Settings → Navigation** to build persistent object indexes for saved SQL connections. This option is off by default. When enabled, saving or refreshing connections updates their indexes. The index covers tables, views, materialized views, functions, and procedures supported by the driver, across that connection's visible databases and schemas. Only names, object context, signatures, and available comments are indexed; table rows, columns, and DDL are not loaded.
+
+Local search checks indexes from all saved connections, including inactive or disconnected connections, alongside already loaded objects. Searching and restarting DBX do not connect those saved connections. Indexes have no automatic expiration. Use **Refresh object indexes for all connections** next to the search box to initialize indexes for existing connections or update them after database changes. Opening a cached result may require reconnecting. The connected-connections filter still restricts results when enabled.
+
+When the option is enabled, refreshing a connection from its context menu also rebuilds that connection's object index. The refresh button at the top of the sidebar rebuilds object indexes for all supported saved connections, including collapsed or disconnected connections. These tree refresh actions preserve your current search mode. Disabling the option stops index builds on save or refresh and removes indexed results from the sidebar and Quick Open, while keeping saved indexes for later reuse. Enabling or refreshing may connect to read metadata; searching itself does not connect.
+
+Quick Open (`Ctrl+P` by default, or `Cmd+P` on macOS) also searches these persistent object indexes. Indexed tables, views, and routines remain searchable after closing a connection; searching does not reopen a connection you explicitly closed. For older connections without an index, use **Refresh object indexes for all connections** to build it first.
+
+SQL editor completion also uses indexed table, view, routine, database, and schema names. Column metadata is loaded on demand and cached separately with names, types, nullability, and comments; DBX does not scan every table or persist rows or column defaults for completion. Column snapshots use the existing disk metadata cache, with a maximum age of 24 hours and capacity-based eviction. Valid snapshots can be reused after restarting. Completion uses cached metadata for explicitly closed connections without reconnecting. Structure refreshes, DDL that invalidates metadata, and connection configuration changes clear the relevant cache. Columns resolved through an Oracle session's current schema are not persisted across sessions.
+
+An incomplete-index message means some metadata could not be read. DBX retains the previous index for failed scopes; check connectivity, saved credentials, and account permissions before refreshing. Background indexing does not ask for missing passwords, so connections without saved or session credentials may need a successful interactive connection first.
+
+Turning off **Local search** retains the existing debounced driver search in the active connection, supplemented by cached results from other connections. You can also restrict results by node type or use local table search inside a database.
 
 Visible-scope settings can hide databases, schemas, system schemas, or tables with configured prefixes. Newly created databases or schemas can be added to the visible list automatically.
 
-<Callout type="info">Search results depend on account visibility and loaded metadata. Refresh the related node after creating, deleting, or renaming an object.</Callout>
+<Callout type="info">Search results depend on account visibility and the last successful index build. Refresh the object indexes after creating, deleting, or renaming objects. Editing a connection's endpoint or visibility settings invalidates its previous index; deleting the connection removes its index.</Callout>
 
 ## Metadata Display
 

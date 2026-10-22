@@ -31,6 +31,13 @@ import { DATA_GRID_DEFAULT_VISIBLE_COPY_EXTRACTORS, DATA_GRID_EXTRACTOR_OPTIONS_
 import { DEFAULT_MONO_FONT_FAMILY } from "@/lib/app/appFonts";
 
 describe("normalizeEditorSettings", () => {
+  it("keeps cross-connection object search opt-in for existing, saved, and malformed settings", () => {
+    expect(DEFAULT_EDITOR_SETTINGS.globalObjectSearchEnabled).toBe(false);
+    expect(normalizeEditorSettings({}).globalObjectSearchEnabled).toBe(false);
+    expect(normalizeEditorSettings({ globalObjectSearchEnabled: true }).globalObjectSearchEnabled).toBe(true);
+    expect(normalizeEditorSettings({ globalObjectSearchEnabled: false }).globalObjectSearchEnabled).toBe(false);
+    expect(normalizeEditorSettings({ globalObjectSearchEnabled: "true" } as any).globalObjectSearchEnabled).toBe(false);
+  });
   it("preserves the compact object browser view and rejects unknown modes", () => {
     expect(normalizeEditorSettings({ objectBrowserViewMode: "compact" }).objectBrowserViewMode).toBe("compact");
     expect(normalizeEditorSettings({ objectBrowserViewMode: "unknown" as any }).objectBrowserViewMode).toBe(DEFAULT_EDITOR_SETTINGS.objectBrowserViewMode);

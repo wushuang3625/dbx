@@ -108,6 +108,21 @@ describe("Sidebar F5 refresh shortcut and connection database reload (#12246)", 
     expect(refreshTreeNodeSpy).toHaveBeenCalledWith(expect.objectContaining({ id: "mysql-1:shop_db", type: "database" }));
   });
 
+  it("routes the connection context menu refresh through the same refresh action", async () => {
+    const connNode: TreeNode = { id: "mysql-1", label: "Local DB", type: "connection", connectionId: "mysql-1" };
+    const { hostRef } = mountHost(connNode);
+    const connectionStore = useConnectionStore();
+    connectionStore.connections = [{ id: "mysql-1", name: "Local DB", db_type: "mysql" } as any];
+    const refresh = vi.spyOn(connectionStore, "refreshConnectionTreeNode").mockResolvedValue(undefined);
+    await flush();
+
+    const item = hostRef.value?.buildContextMenu(connNode)?.find((entry) => entry.sidebarActionId === "contextMenu.refreshChildren");
+    expect(item?.action).toBeTypeOf("function");
+    await item!.action!();
+
+    expect(refresh).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: "mysql-1", type: "connection" }));
+  });
+
   it("updates context menu shortcut based on configured refreshData shortcut", async () => {
     const connNode: TreeNode = {
       id: "conn-1",

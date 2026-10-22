@@ -11,6 +11,7 @@ const { store, settings, backend } = vi.hoisted(() => ({
     newConnectionGroupId: null,
     selectedConnectionGroupId: null,
     addConnection: vi.fn(),
+    refreshSidebarObjectIndex: vi.fn().mockResolvedValue([]),
     updateConnection: vi.fn(),
     connect: vi.fn(),
     ensureConnected: vi.fn(),

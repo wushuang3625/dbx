@@ -43,6 +43,13 @@ function makeSettings(overrides: Partial<EditorSettings> = {}): EditorSettings {
 }
 
 describe("EDITOR_SETTINGS_DRAFT_KEYS", () => {
+  it("tracks global object search separately from the local search mode", () => {
+    const base = editorSettingsDraftFromSettings(makeSettings({ globalObjectSearchEnabled: false }));
+    const enabled = editorSettingsDraftFromSettings(makeSettings({ globalObjectSearchEnabled: true }));
+    expect(editorSettingsDraftChanged(enabled, base)).toBe(true);
+    expect(editorSettingsPatchFromDraft(enabled, base)).toEqual({ globalObjectSearchEnabled: true });
+    expect(editorSettingsDraftPatchFromSettings({ globalObjectSearchEnabled: false })).toEqual({ globalObjectSearchEnabled: false });
+  });
   it("tracks the result-tab click setting in the draft without changing saved settings", () => {
     const settings = makeSettings({ pinResultTabOnClick: true });
     const draft = editorSettingsDraftFromSettings(settings);

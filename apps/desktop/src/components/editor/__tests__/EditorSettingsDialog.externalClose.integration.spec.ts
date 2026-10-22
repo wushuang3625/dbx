@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { useSettingsStore } from "@/stores/settingsStore";
 import EditorSettingsDialog from "../EditorSettingsDialog.vue";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 const backend = vi.hoisted(() => ({ saved: null as unknown, saves: vi.fn() }));
 
@@ -54,7 +55,7 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-async function mountPage(initialTab: "editor" | "data" = "editor") {
+async function mountPage(initialTab: "editor" | "data" | "navigation" = "editor") {
   const pinia = createPinia();
   setActivePinia(pinia);
   const store = useSettingsStore();
@@ -68,17 +69,24 @@ async function mountPage(initialTab: "editor" | "data" = "editor") {
   app = createApp(
     defineComponent({
       setup: () => () =>
-        open.value
-          ? h(EditorSettingsDialog, {
-              ref: page,
-              variant: "page",
-              open: true,
-              initialTab,
-              "onUpdate:open": (value: boolean) => {
-                open.value = value;
-              },
-            })
-          : null,
+        h(
+          TooltipProvider,
+          { delayDuration: 0 },
+          {
+            default: () =>
+              open.value
+                ? h(EditorSettingsDialog, {
+                    ref: page,
+                    variant: "page",
+                    open: true,
+                    initialTab,
+                    "onUpdate:open": (value: boolean) => {
+                      open.value = value;
+                    },
+                  })
+                : null,
+          },
+        ),
     }),
   );
   app.use(pinia);
@@ -102,6 +110,29 @@ function clickText(key: string) {
 }
 
 describe("settings page external close request", () => {
+  it("applies, restores, and disables cross-connection object search from Navigation settings", async () => {
+    const { page, open, store } = await mountPage("navigation");
+    const toggle = () => host.querySelector<HTMLButtonElement>("#global-object-search-enabled")!;
+    expect(toggle().getAttribute("aria-checked")).toBe("false");
+    toggle().click();
+    await settle();
+    expect(store.editorSettings.globalObjectSearchEnabled).toBe(false);
+    clickText("settings.apply");
+    await settle();
+    expect(store.editorSettings.globalObjectSearchEnabled).toBe(true);
+    expect(backend.saves).toHaveBeenCalledWith(expect.objectContaining({ globalObjectSearchEnabled: true }));
+    page.value!.requestClose();
+    await settle();
+    open.value = true;
+    await settle();
+    expect(toggle().getAttribute("aria-checked")).toBe("true");
+    toggle().click();
+    await settle();
+    clickText("settings.apply");
+    await settle();
+    expect(store.editorSettings.globalObjectSearchEnabled).toBe(false);
+    expect(backend.saves).toHaveBeenLastCalledWith(expect.objectContaining({ globalObjectSearchEnabled: false }));
+  });
   it("saves and restores independent normal and transpose information placement", async () => {
     const { page, open, store } = await mountPage("data");
     const transposeSwitch = () => host.querySelector<HTMLButtonElement>("#data-grid-transpose-metadata-in-info-column")!;

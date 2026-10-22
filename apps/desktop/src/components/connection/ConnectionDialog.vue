@@ -6892,6 +6892,9 @@ async function save(options: SaveConnectionOptions = {}): Promise<boolean> {
       store.startEditing(savedConfig.id);
     }
     if (connectAfterSave && savedConfig.db_type !== "jdbc") startSavedConnection(savedConfig);
+    // Build in the background after saving; indexing errors must not undo a
+    // successfully saved connection or open a second password dialog.
+    void store.refreshSidebarObjectIndex(savedConfig.id);
     return true;
   } catch (e: any) {
     const cause = mongodbAuthFailureHint(String(e?.message || e));

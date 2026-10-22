@@ -44,14 +44,21 @@ async function saveSchemaCacheSafe(cacheKey: string, payload: unknown): Promise<
   }
 }
 
-export type ObjectMetadataFacet = "columns" | "indexes" | "foreign-keys" | "constraints" | "triggers" | "partitions" | "comment" | "owner";
+export type ObjectMetadataFacet = "columns" | "completion-columns" | "indexes" | "foreign-keys" | "constraints" | "triggers" | "partitions" | "comment" | "owner";
+
+interface ObjectMetadataLoadOptions {
+  force?: boolean;
+  cacheContext?: string;
+}
 
 function cacheSegment(value: string | undefined): string {
   return encodeURIComponent(value ?? "");
 }
 
-function facetKey(request: ObjectDdlRequest, facet: ObjectMetadataFacet): string {
-  return `${[OBJECT_METADATA_CACHE_PREFIX, cacheSegment(request.connectionId), cacheSegment(request.database), cacheSegment(request.schema), cacheSegment(request.tableName), cacheSegment(request.catalog), cacheSegment(request.objectType ?? "TABLE"), facet].join(":")}:`;
+function facetKey(request: ObjectDdlRequest, facet: ObjectMetadataFacet, cacheContext?: string): string {
+  const parts = [OBJECT_METADATA_CACHE_PREFIX, cacheSegment(request.connectionId), cacheSegment(request.database), cacheSegment(request.schema), cacheSegment(request.tableName), cacheSegment(request.catalog), cacheSegment(request.objectType ?? "TABLE"), facet];
+  if (cacheContext !== undefined) parts.push(cacheSegment(cacheContext));
+  return `${parts.join(":")}:`;
 }
 
 function invalidationPrefix(match: MetadataCacheInvalidation): string {
@@ -123,8 +130,8 @@ function invalidatePersistedPrefix(prefix: string): Promise<void> {
   return deletion;
 }
 
-export async function loadObjectMetadataFacet<T>(request: ObjectDdlRequest, facet: ObjectMetadataFacet, loader: () => Promise<T>, options?: { force?: boolean }): Promise<{ value: T; cacheStatus: "memory" | "disk" | "remote" }> {
-  const token = activeLoads.begin(facetKey(request, facet));
+export async function loadObjectMetadataFacet<T>(request: ObjectDdlRequest, facet: ObjectMetadataFacet, loader: () => Promise<T>, options?: ObjectMetadataLoadOptions): Promise<{ value: T; cacheStatus: "memory" | "disk" | "remote" }> {
+  const token = activeLoads.begin(facetKey(request, facet, options?.cacheContext));
   try {
     return await waitForMetadata(loadObjectMetadataFacetInternal(request, facet, loader, token.controller.signal, options), metadataLoadBudgetMs(request.queryTimeoutSecs), token.controller.signal);
   } catch (error) {
@@ -135,8 +142,39 @@ export async function loadObjectMetadataFacet<T>(request: ObjectDdlRequest, face
   }
 }
 
-async function loadObjectMetadataFacetInternal<T>(request: ObjectDdlRequest, facet: ObjectMetadataFacet, loader: () => Promise<T>, signal: AbortSignal, options?: { force?: boolean }): Promise<{ value: T; cacheStatus: "memory" | "disk" | "remote" }> {
-  const cacheKey = facetKey(request, facet);
+/** Read metadata already cached on this device, without invoking a database loader. */
+export async function readCachedObjectMetadataFacet<T>(request: ObjectDdlRequest, facet: ObjectMetadataFacet, options?: Pick<ObjectMetadataLoadOptions, "cacheContext">): Promise<{ value: T; cacheStatus: "memory" | "disk" } | undefined> {
+  const token = activeLoads.begin(facetKey(request, facet, options?.cacheContext));
+  try {
+    return await waitForMetadata(readCachedFacet<T>(request, facetKey(request, facet, options?.cacheContext), token.controller.signal), metadataLoadBudgetMs(request.queryTimeoutSecs), token.controller.signal);
+  } finally {
+    token.controller.abort();
+    activeLoads.finish(token);
+  }
+}
+
+async function readCachedFacet<T>(request: ObjectDdlRequest, cacheKey: string, signal: AbortSignal): Promise<{ value: T; cacheStatus: "memory" | "disk" } | undefined> {
+  await waitForPendingInvalidations(cacheKey);
+  signal.throwIfAborted();
+  const runtime = getMetadataRuntimeCache<T>(cacheKey);
+  if (runtime) return { value: runtime.value, cacheStatus: "memory" };
+  const readToken = activeCacheReads.begin(cacheKey);
+  let cached: ReturnType<typeof decodeEnvelope<T>>;
+  try {
+    cached = decodeEnvelope<T>(await waitForMetadata(loadSchemaCacheSafe<unknown>(cacheKey), metadataLoadBudgetMs(request.queryTimeoutSecs), signal));
+  } finally {
+    activeCacheReads.finish(readToken);
+  }
+  signal.throwIfAborted();
+  if (readToken.invalidated) return readCachedFacet<T>(request, cacheKey, signal);
+  if (!cached?.hit) return undefined;
+  recordMetadataCacheL2Hit(cacheKey, cached.value);
+  setMetadataRuntimeCache(cacheKey, cached.value, request.connectionId);
+  return { value: cached.value, cacheStatus: "disk" };
+}
+
+async function loadObjectMetadataFacetInternal<T>(request: ObjectDdlRequest, facet: ObjectMetadataFacet, loader: () => Promise<T>, signal: AbortSignal, options?: ObjectMetadataLoadOptions): Promise<{ value: T; cacheStatus: "memory" | "disk" | "remote" }> {
+  const cacheKey = facetKey(request, facet, options?.cacheContext);
   if (options?.force) {
     const existing = inFlightLoads.get(cacheKey);
     if (existing?.force) return { value: (await existing.promise) as T, cacheStatus: "remote" };
@@ -153,25 +191,8 @@ async function loadObjectMetadataFacetInternal<T>(request: ObjectDdlRequest, fac
 
   signal.throwIfAborted();
   if (!options?.force) {
-    const runtime = getMetadataRuntimeCache<T>(cacheKey);
-    if (runtime) return { value: runtime.value, cacheStatus: "memory" };
-    const readToken = activeCacheReads.begin(cacheKey);
-    let cached: ReturnType<typeof decodeEnvelope<T>>;
-    try {
-      cached = decodeEnvelope<T>(await waitForMetadata(loadSchemaCacheSafe<unknown>(cacheKey), metadataLoadBudgetMs(request.queryTimeoutSecs), signal));
-    } finally {
-      activeCacheReads.finish(readToken);
-    }
-    signal.throwIfAborted();
-    if (readToken.invalidated) {
-      const value = await loadObjectMetadataFacetInternal(request, facet, loader, signal, { force: false });
-      return { value: value.value, cacheStatus: "remote" };
-    }
-    if (cached?.hit) {
-      recordMetadataCacheL2Hit(cacheKey, cached.value);
-      setMetadataRuntimeCache(cacheKey, cached.value, request.connectionId);
-      return { value: cached.value, cacheStatus: "disk" };
-    }
+    const cached = await readCachedFacet<T>(request, cacheKey, signal);
+    if (cached) return cached;
   }
 
   signal.throwIfAborted();

@@ -263,7 +263,15 @@ describe("connectionStore tree refresh state", () => {
 });
 
 describe("connection node refresh awaits object cache invalidation", () => {
-  function installConnectionApiMocks(options?: { deleteSchemaCachePrefix?: ReturnType<typeof vi.fn>; getColumns?: ReturnType<typeof vi.fn>; getTableDisplayDdl?: ReturnType<typeof vi.fn>; listDatabases?: ReturnType<typeof vi.fn>; listSchemaInfos?: ReturnType<typeof vi.fn> }) {
+  function installConnectionApiMocks(options?: {
+    deleteSchemaCachePrefix?: ReturnType<typeof vi.fn>;
+    getColumns?: ReturnType<typeof vi.fn>;
+    getTableDisplayDdl?: ReturnType<typeof vi.fn>;
+    listDatabases?: ReturnType<typeof vi.fn>;
+    listSchemaInfos?: ReturnType<typeof vi.fn>;
+    listObjects?: ReturnType<typeof vi.fn>;
+    saveSchemaCache?: ReturnType<typeof vi.fn>;
+  }) {
     vi.doMock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: () => false }));
     vi.doMock("@/lib/backend/api", () => ({
       checkConnectionHealth: vi.fn().mockResolvedValue(undefined),
@@ -272,12 +280,13 @@ describe("connection node refresh awaits object cache invalidation", () => {
       getTableDisplayDdl: options?.getTableDisplayDdl ?? vi.fn().mockResolvedValue("CREATE TABLE users (id int)"),
       listDatabases: options?.listDatabases ?? vi.fn().mockResolvedValue([{ name: "app", comment: null }]),
       listInstalledAgents: vi.fn().mockResolvedValue([]),
-      listObjects: vi.fn().mockResolvedValue([]),
+      listObjects: options?.listObjects ?? vi.fn().mockResolvedValue([]),
+      listSchemas: vi.fn().mockResolvedValue(["public"]),
       listSchemaInfos: options?.listSchemaInfos ?? vi.fn().mockResolvedValue([{ name: "public", comment: null }]),
       listTables: vi.fn().mockResolvedValue([]),
       loadSchemaCache: vi.fn().mockResolvedValue(null),
       saveConnections: vi.fn().mockResolvedValue(undefined),
-      saveSchemaCache: vi.fn().mockResolvedValue(undefined),
+      saveSchemaCache: options?.saveSchemaCache ?? vi.fn().mockResolvedValue(undefined),
       saveSidebarLayout: vi.fn().mockResolvedValue(undefined),
     }));
   }
@@ -287,11 +296,13 @@ describe("connection node refresh awaits object cache invalidation", () => {
     return { id: "pg-1:app", label: "app", type: "database", connectionId: "pg-1", database: "app", isExpanded: true, children: [] };
   }
 
-  async function createStoreWithConnection(connectionId = "pg-1") {
+  async function createStoreWithConnection(connectionId = "pg-1", globalObjectSearchEnabled = true) {
     const { useConnectionStore } = await import("@/stores/connectionStore");
     const { useSettingsStore } = await import("@/stores/settingsStore");
     const store = useConnectionStore();
     useSettingsStore().editorSettings.sidebarObjectDisplay = "grouped";
+    useSettingsStore().isEditorSettingsLoaded = true;
+    useSettingsStore().editorSettings.globalObjectSearchEnabled = globalObjectSearchEnabled;
     const connection: ConnectionConfig = {
       ...postgresConnection(),
       id: connectionId,
@@ -334,6 +345,120 @@ describe("connection node refresh awaits object cache invalidation", () => {
     setActivePinia(createPinia());
   });
 
+  it("does not build object indexes from connection, toolbar, or explicit index refresh while disabled", async () => {
+    const listObjects = vi.fn().mockResolvedValue([]);
+    installConnectionApiMocks({ listObjects });
+    const { store, connectionNode } = await createStoreWithConnection("pg-1", false);
+    await store.refreshConnectionTreeNode(connectionNode);
+    await store.refreshAllTree();
+    await store.refreshSidebarObjectIndex();
+    expect(listObjects).not.toHaveBeenCalled();
+    expect(store.sidebarObjectIndexes).toEqual({});
+    expect(store.sidebarObjectIndexStatuses).toEqual({});
+  });
+
+  it("restores an enabled preference without connecting or discovering objects at startup", async () => {
+    const listObjects = vi.fn().mockResolvedValue([]);
+    const listDatabases = vi.fn().mockResolvedValue([{ name: "app" }]);
+    installConnectionApiMocks({ listObjects, listDatabases });
+    await createStoreWithConnection("pg-1", false);
+    const { useSettingsStore } = await import("@/stores/settingsStore");
+    const settings = useSettingsStore();
+    settings.isEditorSettingsLoaded = false;
+    settings.editorSettings.globalObjectSearchEnabled = true;
+    settings.isEditorSettingsLoaded = true;
+    const api = await import("@/lib/backend/api");
+    await vi.waitFor(() => expect(api.loadSchemaCache).toHaveBeenCalledWith("sidebar-object-index-v1:pg-1:"));
+    expect(listObjects).not.toHaveBeenCalled();
+    expect(listDatabases).not.toHaveBeenCalled();
+  });
+
+  it("starts indexing when enabled and keeps the cached index when disabled again", async () => {
+    const listObjects = vi.fn().mockResolvedValue([{ name: "orders", object_type: "TABLE" }]);
+    installConnectionApiMocks({ listObjects });
+    const { store, connectionNode } = await createStoreWithConnection("pg-1", false);
+    const { useSettingsStore } = await import("@/stores/settingsStore");
+    const settings = useSettingsStore();
+    settings.editorSettings.globalObjectSearchEnabled = true;
+    await store.refreshSidebarObjectIndex();
+    expect(store.sidebarObjectIndexStatuses["pg-1"]).toBe("ready");
+    expect(store.globalObjectSearchEnabled).toBe(true);
+    const cached = store.sidebarObjectIndexes["pg-1"];
+    settings.editorSettings.globalObjectSearchEnabled = false;
+    listObjects.mockClear();
+    await store.refreshConnectionTreeNode(connectionNode);
+    expect(store.globalObjectSearchEnabled).toBe(false);
+    expect(listObjects).not.toHaveBeenCalled();
+    expect(store.sidebarObjectIndexes["pg-1"]).toBe(cached);
+  });
+
+  it.each(["connection", "all"] as const)("rebuilds and persists the object index during %s refresh", async (scope) => {
+    const listObjects = vi.fn().mockResolvedValue([{ name: "old_table", object_type: "TABLE" }]);
+    const saveSchemaCache = vi.fn().mockResolvedValue(undefined);
+    installConnectionApiMocks({ listObjects, saveSchemaCache });
+    const { store, connectionNode } = await createStoreWithConnection();
+    const { useSettingsStore } = await import("@/stores/settingsStore");
+    const settings = useSettingsStore();
+    await store.refreshSidebarObjectIndex("pg-1");
+    settings.editorSettings.sidebarGlobalSearchLocal = false;
+    store.activeConnectionId = "other";
+    const other = { ...postgresConnection(), id: "other" };
+    store.connections.push(other);
+    store.connectedIds.add(other.id);
+    // The toolbar refresh must also rebuild indexes for collapsed connections.
+    store.treeNodes.push({ id: other.id, connectionId: other.id, label: "Other", type: "connection", isExpanded: false, children: [] });
+    listObjects.mockClear();
+    saveSchemaCache.mockClear();
+
+    let finishIndex!: (objects: Array<{ name: string; object_type: string }>) => void;
+    listObjects.mockReturnValue(new Promise((resolve) => (finishIndex = resolve)));
+    let settled = false;
+    const refresh = (scope === "connection" ? store.refreshConnectionTreeNode(connectionNode) : store.refreshAllTree()).then(() => {
+      settled = true;
+    });
+    await vi.waitFor(() => expect(store.sidebarObjectIndexStatuses["pg-1"]).toBe("building"));
+    expect(settled).toBe(false);
+    finishIndex([{ name: "new_table", object_type: "TABLE" }]);
+    await refresh;
+
+    const refreshedIds = scope === "connection" ? ["pg-1"] : ["other", "pg-1"];
+    expect(listObjects.mock.calls.map(([id]) => id).sort()).toEqual(refreshedIds);
+    for (const id of refreshedIds) {
+      expect(store.sidebarObjectIndexes[id]?.scopes.flatMap((entry) => entry.objects.map((object) => object.name))).toEqual(["new_table"]);
+      expect(store.sidebarObjectIndexStatuses[id]).toBe("ready");
+      expect(saveSchemaCache).toHaveBeenCalledWith(`sidebar-object-index-v1:${id}:`, expect.objectContaining({ connectionId: id, complete: true }));
+    }
+    expect(settings.editorSettings.sidebarGlobalSearchLocal).toBe(false);
+    expect(store.activeConnectionId).toBe("other");
+  });
+
+  it.each(["connection", "all"] as const)("keeps the previous object index and marks failed scopes incomplete during %s refresh", async (scope) => {
+    const listObjects = vi.fn().mockResolvedValue([{ name: "old_table", object_type: "TABLE" }]);
+    installConnectionApiMocks({ listObjects });
+    const { store, connectionNode } = await createStoreWithConnection();
+    await store.refreshSidebarObjectIndex("pg-1");
+    listObjects.mockRejectedValue(new Error("metadata denied"));
+
+    await (scope === "connection" ? store.refreshConnectionTreeNode(connectionNode) : store.refreshAllTree());
+
+    expect(store.sidebarObjectIndexStatuses["pg-1"]).toBe("incomplete");
+    expect(store.sidebarObjectIndexes["pg-1"]?.scopes[0]?.objects.map((object) => object.name)).toEqual(["old_table"]);
+  });
+
+  it("builds indexes without expanded nodes and skips temporary and unsupported connections", async () => {
+    const listObjects = vi.fn().mockResolvedValue([{ name: "new_table", object_type: "TABLE" }]);
+    installConnectionApiMocks({ listObjects });
+    const { store, connectionNode } = await createStoreWithConnection();
+    connectionNode.isExpanded = false;
+    store.connections.push({ ...postgresConnection(), id: "temporary", one_time: true }, { ...postgresConnection(), id: "redis", db_type: "redis" });
+
+    await store.refreshAllTree();
+
+    expect(listObjects.mock.calls.map(([id]) => id)).toEqual(["pg-1"]);
+    expect(Object.keys(store.sidebarObjectIndexes)).toEqual(["pg-1"]);
+    expect(store.treeNodes[0]?.isExpanded).toBe(false);
+  });
+
   it("blocks the tree reload until both object cache deletions settle", async () => {
     const { deleteSchemaCachePrefix, releaseObjectCacheDeletes } = gatedObjectCacheDeletes();
     const listDatabases = vi.fn().mockResolvedValue([{ name: "app", comment: null }]);
@@ -350,7 +475,8 @@ describe("connection node refresh awaits object cache invalidation", () => {
 
     releaseObjectCacheDeletes();
     await refresh;
-    expect(listDatabases).toHaveBeenCalledTimes(1);
+    // One tree reload plus one object-index inventory.
+    expect(listDatabases).toHaveBeenCalledTimes(2);
     expect(listDatabases).toHaveBeenCalledWith("pg-1");
   });
 
@@ -409,7 +535,7 @@ describe("connection node refresh awaits object cache invalidation", () => {
     expect(listDatabases).not.toHaveBeenCalled();
 
     await expect(store.refreshConnectionTreeNode(connectionNode)).resolves.toBeUndefined();
-    expect(listDatabases).toHaveBeenCalledTimes(1);
+    expect(listDatabases).toHaveBeenCalledTimes(2);
   });
 
   it("encodes connection ids in the invalidated object cache prefixes", async () => {

@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/backend/api", () => mocks);
 
-import { cancelObjectMetadataLoadsForConnection, getObjectMetadataCacheDebugStateForTests, invalidateObjectMetadataCache, loadObjectMetadataFacet } from "@/lib/metadata/objectMetadataCache";
+import { cancelObjectMetadataLoadsForConnection, getObjectMetadataCacheDebugStateForTests, invalidateObjectMetadataCache, loadObjectMetadataFacet, readCachedObjectMetadataFacet } from "@/lib/metadata/objectMetadataCache";
 import { isObjectCacheInvalidationError } from "@/lib/metadata/objectCacheInvalidationError";
 import { clearMetadataRuntimeCache } from "@/lib/metadata/metadataRuntimeCache";
 
@@ -79,6 +79,22 @@ describe("objectMetadataCache", () => {
 
     await expect(loadObjectMetadataFacet(request, "columns", loader)).resolves.toEqual({ value: [{ name: "id" }], cacheStatus: "disk" });
     expect(loader).not.toHaveBeenCalled();
+  });
+
+  it("returns a read-only cache miss without populating or writing metadata", async () => {
+    await expect(readCachedObjectMetadataFacet(request, "completion-columns")).resolves.toBeUndefined();
+    expect(mocks.saveSchemaCache).not.toHaveBeenCalled();
+    expect(getObjectMetadataCacheDebugStateForTests().activeReads).toBe(0);
+  });
+
+  it("separates completion identifier contexts while preserving the ordinary metadata keys", async () => {
+    await loadObjectMetadataFacet(request, "completion-columns", async () => ["lower_id"], { cacheContext: "unquoted" });
+    await loadObjectMetadataFacet(request, "completion-columns", async () => ["QuotedId"], { cacheContext: "quoted" });
+    clearMetadataRuntimeCache();
+    expect(await readCachedObjectMetadataFacet(request, "completion-columns", { cacheContext: "unquoted" })).toEqual({ value: ["lower_id"], cacheStatus: "disk" });
+    expect(await readCachedObjectMetadataFacet(request, "completion-columns", { cacheContext: "quoted" })).toEqual({ value: ["QuotedId"], cacheStatus: "disk" });
+    await invalidateObjectMetadataCache(request);
+    await expect(readCachedObjectMetadataFacet(request, "completion-columns", { cacheContext: "quoted" })).resolves.toBeUndefined();
   });
 
   it("backfills memory after a disk hit", async () => {

@@ -1161,6 +1161,7 @@ export interface EditorSettings {
   sidebarTableSearchEnabled: boolean;
   sidebarTableSearchLocal: boolean;
   sidebarGlobalSearchLocal: boolean;
+  globalObjectSearchEnabled: boolean;
   sidebarSearchOpenedDatabasesOnly: boolean;
   autoSelectActiveSidebarNode: boolean;
   sidebarPinDefaultDatabase: boolean;
@@ -1516,6 +1517,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   sidebarTableSearchEnabled: false,
   sidebarTableSearchLocal: true,
   sidebarGlobalSearchLocal: false,
+  globalObjectSearchEnabled: false,
   sidebarSearchOpenedDatabasesOnly: true,
   autoSelectActiveSidebarNode: false,
   sidebarPinDefaultDatabase: true,
@@ -2195,6 +2197,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     routineSourceOpenMode: settings.routineSourceOpenMode === "query-tab" || settings.routineSourceOpenMode === "dialog" ? settings.routineSourceOpenMode : DEFAULT_EDITOR_SETTINGS.routineSourceOpenMode,
     sidebarTableSearchEnabled: typeof settings.sidebarTableSearchEnabled === "boolean" ? settings.sidebarTableSearchEnabled : DEFAULT_EDITOR_SETTINGS.sidebarTableSearchEnabled,
     sidebarTableSearchLocal: typeof settings.sidebarTableSearchLocal === "boolean" ? settings.sidebarTableSearchLocal : DEFAULT_EDITOR_SETTINGS.sidebarTableSearchLocal,
+    globalObjectSearchEnabled: typeof settings.globalObjectSearchEnabled === "boolean" ? settings.globalObjectSearchEnabled : DEFAULT_EDITOR_SETTINGS.globalObjectSearchEnabled,
     sidebarGlobalSearchLocal: typeof settings.sidebarGlobalSearchLocal === "boolean" ? settings.sidebarGlobalSearchLocal : DEFAULT_EDITOR_SETTINGS.sidebarGlobalSearchLocal,
     sidebarSearchOpenedDatabasesOnly: typeof settings.sidebarSearchOpenedDatabasesOnly === "boolean" ? settings.sidebarSearchOpenedDatabasesOnly : DEFAULT_EDITOR_SETTINGS.sidebarSearchOpenedDatabasesOnly,
     autoSelectActiveSidebarNode: settings.autoSelectActiveSidebarNode ?? DEFAULT_EDITOR_SETTINGS.autoSelectActiveSidebarNode,
@@ -3129,6 +3132,7 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.routineSourceOpenMode !== undefined) editorSettings.value.routineSourceOpenMode = partial.routineSourceOpenMode;
     if (partial.sidebarTableSearchEnabled !== undefined) editorSettings.value.sidebarTableSearchEnabled = partial.sidebarTableSearchEnabled;
     if (partial.sidebarTableSearchLocal !== undefined) editorSettings.value.sidebarTableSearchLocal = partial.sidebarTableSearchLocal;
+    if (partial.globalObjectSearchEnabled !== undefined) editorSettings.value.globalObjectSearchEnabled = partial.globalObjectSearchEnabled;
     if (partial.sidebarGlobalSearchLocal !== undefined) editorSettings.value.sidebarGlobalSearchLocal = partial.sidebarGlobalSearchLocal;
     if (partial.sidebarSearchOpenedDatabasesOnly !== undefined) editorSettings.value.sidebarSearchOpenedDatabasesOnly = partial.sidebarSearchOpenedDatabasesOnly;
     if (partial.autoSelectActiveSidebarNode !== undefined) editorSettings.value.autoSelectActiveSidebarNode = partial.autoSelectActiveSidebarNode;

@@ -14,6 +14,13 @@ function fileWith(editor: Record<string, unknown>, overrides: Record<string, unk
 }
 
 describe("settingsTransfer", () => {
+  it("round-trips the global object search choice as a navigation setting", () => {
+    const result = parseSettingsTransferFile(serializeSettingsTransfer({ ...DEFAULT_EDITOR_SETTINGS, globalObjectSearchEnabled: true }));
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.editorSettings.globalObjectSearchEnabled).toBe(true);
+    expect(transferCategoryForKey("globalObjectSearchEnabled")).toBe("navigation");
+    expect(parseSettingsTransferFile(fileWith({ globalObjectSearchEnabled: "true" })).ok).toBe(false);
+  });
   it("round-trips column comment placement as a data preference and rejects non-booleans", () => {
     const text = serializeSettingsTransfer({ ...DEFAULT_EDITOR_SETTINGS, dataGridColumnCommentsInInfoArea: true, dataGridTransposeMetadataInInfoColumn: true });
     const result = parseSettingsTransferFile(text);

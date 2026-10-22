@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, ref, watch, nextTick } from "vue";
 import { useI18n } from "vue-i18n";
-import { Command, FileCode, FileText, Search, FolderPlus, SlidersHorizontal, X } from "@lucide/vue";
+import { Command, FileCode, FileText, Search, FolderPlus, SlidersHorizontal, X, Loader2 } from "@lucide/vue";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -46,6 +46,7 @@ const {
   contentGroups,
   contentSelectedItem,
   contentSearching,
+  searching,
   setContentMode: setSearchContentMode,
   scopeConnectionIds,
   scopeActive,
@@ -346,7 +347,8 @@ watch(selectedIndex, async () => {
       <div class="flex max-h-[calc(var(--dbx-viewport-height)-2rem)] min-h-0 flex-col bg-background">
         <!-- Search Input -->
         <div class="flex shrink-0 items-center gap-3 px-4 pr-12 py-3 border-b">
-          <Command class="h-5 w-5 text-muted-foreground" />
+          <Loader2 v-if="searching" class="h-5 w-5 shrink-0 animate-spin text-muted-foreground motion-reduce:animate-none" aria-hidden="true" />
+          <Command v-else class="h-5 w-5 shrink-0 text-muted-foreground" aria-hidden="true" />
           <Input
             ref="inputRef"
             v-model="searchQuery"
@@ -418,7 +420,7 @@ watch(selectedIndex, async () => {
         </div>
 
         <!-- Results List -->
-        <div ref="listRef" class="min-h-0 overflow-y-auto" :class="contentMode ? 'max-h-[min(36vh,320px)]' : 'max-h-[400px]'">
+        <div ref="listRef" class="min-h-0 overflow-y-auto" :class="contentMode ? 'max-h-[min(36vh,320px)]' : 'max-h-[400px]'" :aria-busy="searching">
           <!-- Content search mode: group matches by file (DataGrip-style) -->
           <template v-if="contentMode">
             <div v-if="contentSearching" class="px-4 py-8 text-center text-muted-foreground">
@@ -468,7 +470,7 @@ watch(selectedIndex, async () => {
           <!-- Normal mode -->
           <div v-else-if="filteredItems.length === 0" class="px-4 py-8 text-center text-muted-foreground">
             <p v-if="!searchQuery.trim()">{{ t("quickOpen.emptyPlaceholder") }}</p>
-            <p v-else>{{ t("quickOpen.noResults") }}</p>
+            <p v-else-if="!searching">{{ t("quickOpen.noResults") }}</p>
           </div>
 
           <div v-else class="divide-y">
@@ -503,7 +505,10 @@ watch(selectedIndex, async () => {
 
         <!-- Footer -->
         <div class="shrink-0 flex flex-wrap justify-between gap-2 px-4 py-2 border-t text-xs text-muted-foreground">
-          <div>{{ contentMode ? contentMatchCount : filteredItems.length }} {{ t("quickOpen.results") }}</div>
+          <div role="status" aria-live="polite" aria-atomic="true">
+            <span v-if="searching">{{ t(contentMode ? "quickOpen.searchingContent" : "databaseSearch.searching") }}</span>
+            <span v-else>{{ contentMode ? contentMatchCount : filteredItems.length }} {{ t("quickOpen.results") }}</span>
+          </div>
           <div v-if="previewEditing" role="status">{{ t("quickOpen.finishEditing") }}</div>
           <div v-else class="flex gap-4">
             <span><kbd class="px-2 py-1 rounded bg-muted">↑↓</kbd> {{ t("quickOpen.navigate") }}</span>

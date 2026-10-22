@@ -888,6 +888,10 @@ export default withEnglishFallback({
     noMatch: "일치 항목이 없습니다",
   },
   sidebar: {
+    globalLocalSearchTooltip: "원격 요청 없이 모든 연결의 영구 인덱스와 로드된 개체를 검색합니다. 연결 저장 시 인덱스를 생성하며 이후에는 수동으로 새로 고칩니다.",
+    refreshObjectIndex: "모든 연결의 개체 인덱스 새로 고침",
+    objectIndexBuilding: "백그라운드에서 개체 인덱스를 생성하는 중…",
+    objectIndexIncomplete: "일부 연결의 인덱스가 불완전합니다. 연결 및 권한을 확인한 후 새로 고치세요.",
     connections: "연결",
     noConnections: "아직 연결이 없습니다",
     importExport: "가져오기 / 내보내기",
@@ -7698,6 +7702,8 @@ export default withEnglishFallback({
     truncatedBadge: "앞 {budget}행만 비교",
   },
   settings: {
+    globalObjectSearchEnabled: "연결 간 전역 개체 검색",
+    globalObjectSearchEnabledDescription: "기본적으로 꺼져 있습니다. 저장된 SQL 연결을 색인하여 사이드바와 빠른 열기에서 테이블, 뷰, 루틴을 검색하고 새로 고칠 때 색인도 갱신합니다. 활성화하거나 새로 고칠 때 메타데이터를 읽기 위해 연결할 수 있으며 행 데이터는 읽지 않습니다.",
     historyRetentionLimit: "쿼리 기록 보관 개수",
     mcpHistoryRetentionLimit: "MCP 기록 보존 수",
     mcpHistoryRetentionDescription: "SQL 기록과 별도로 MCP 호출 기록 보존 수를 관리합니다.",
